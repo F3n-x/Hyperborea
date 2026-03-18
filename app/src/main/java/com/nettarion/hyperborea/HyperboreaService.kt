@@ -16,6 +16,7 @@ import com.nettarion.hyperborea.core.orchestration.Orchestrator
 import com.nettarion.hyperborea.core.orchestration.OrchestratorState
 import com.nettarion.hyperborea.core.profile.UserPreferences
 import com.nettarion.hyperborea.overlay.OverlayManager
+import com.nettarion.hyperborea.platform.update.UpdateManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -34,6 +35,7 @@ class HyperboreaService : Service() {
     @Inject lateinit var logger: AppLogger
     @Inject lateinit var scope: CoroutineScope
     @Inject lateinit var licenseChecker: LicenseChecker
+    @Inject lateinit var updateManager: UpdateManager
 
     private var stateObserverJob: Job? = null
     private lateinit var overlayManager: OverlayManager
@@ -65,6 +67,7 @@ class HyperboreaService : Service() {
             broadcastManager.start()
         }
         startStateObserver()
+        updateManager.startAutoUpdate()
         logger.i(TAG, "Service created")
     }
 

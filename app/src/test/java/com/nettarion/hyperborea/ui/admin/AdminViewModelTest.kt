@@ -131,6 +131,7 @@ class AdminViewModelTest {
             licenseChecker = fakeLicenseChecker,
             versionProvider = VersionProvider { 1 },
             downloadDir = downloadDir,
+            orchestratorState = kotlinx.coroutines.flow.MutableStateFlow(com.nettarion.hyperborea.core.orchestration.OrchestratorState.Idle),
         )
 
         viewModel = AdminViewModel(

@@ -1,5 +1,6 @@
 package com.nettarion.hyperborea.sensor.hrm
 
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothManager
@@ -31,6 +32,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
+@SuppressLint("MissingPermission") // API 25 system app — BLE permissions are install-time granted
 @Singleton
 class HrmAdapter @Inject constructor(
     private val context: Context,

@@ -39,6 +39,7 @@ class UpdateTrackTest {
 
     private fun createTrack(
         testDispatcher: kotlinx.coroutines.test.TestDispatcher = UnconfinedTestDispatcher(),
+        urlResolver: (suspend (UpdateInfo) -> String)? = null,
     ): UpdateTrack {
         val scope = kotlinx.coroutines.CoroutineScope(testDispatcher)
         return UpdateTrack(
@@ -49,6 +50,7 @@ class UpdateTrackTest {
             httpClient = httpClient,
             logger = logger,
             scope = scope,
+            urlResolver = urlResolver,
             allowedUrlPrefixes = listOf("https://example.com"),
         )
     }
@@ -226,6 +228,48 @@ class UpdateTrackTest {
         assertThat(state).isInstanceOf(TrackState.ReadyToInstall::class.java)
         val ready = state as TrackState.ReadyToInstall
         assertThat(ready.info).isEqualTo(info)
+    }
+
+    // --- urlResolver ---
+
+    @Test
+    fun `download calls urlResolver for fresh URL`() = runTest {
+        var resolverCalled = false
+        track = createTrack(
+            testDispatcher = UnconfinedTestDispatcher(testScheduler),
+            urlResolver = { info ->
+                resolverCalled = true
+                "https://example.com/fresh-url.bin"
+            },
+        )
+        val content = "resolved content".toByteArray()
+        val sha256 = sha256Hex(content)
+        val info = sampleInfo.copy(sha256 = sha256)
+
+        httpClient.downloadBytes = content
+        track.setAvailable(info)
+        track.download()
+
+        assertThat(resolverCalled).isTrue()
+        assertThat(track.state.value).isInstanceOf(TrackState.ReadyToInstall::class.java)
+    }
+
+    @Test
+    fun `download falls back to cached URL when urlResolver fails`() = runTest {
+        track = createTrack(
+            testDispatcher = UnconfinedTestDispatcher(testScheduler),
+            urlResolver = { throw java.io.IOException("Resolver failed") },
+        )
+        val content = "fallback content".toByteArray()
+        val sha256 = sha256Hex(content)
+        val info = sampleInfo.copy(sha256 = sha256)
+
+        httpClient.downloadBytes = content
+        track.setAvailable(info)
+        track.download()
+
+        // Should fall back to original URL and download successfully
+        assertThat(track.state.value).isInstanceOf(TrackState.ReadyToInstall::class.java)
     }
 
     private fun sha256Hex(bytes: ByteArray): String {

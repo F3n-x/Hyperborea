@@ -21,6 +21,7 @@ class UpdateTrack internal constructor(
     private val httpClient: UpdateHttpClient,
     private val logger: AppLogger,
     private val scope: CoroutineScope,
+    private val urlResolver: (suspend (UpdateInfo) -> String)? = null,
     private val allowedUrlPrefixes: List<String> = buildList {
         add(BuildConfig.SERVER_URL)
         val r2 = BuildConfig.R2_BASE_URL
@@ -34,6 +35,7 @@ class UpdateTrack internal constructor(
 
     fun setAvailable(info: UpdateInfo) {
         cancelActiveJob()
+        logger.i(TAG, "$name: Update available: ${info.version}")
         _state.value = TrackState.Available(info)
     }
 
@@ -46,20 +48,21 @@ class UpdateTrack internal constructor(
         val info = current.info
         activeJob = scope.launch {
             try {
-                if (!isAllowedDownloadUrl(info.url)) {
-                    val msg = "Download URL not from allowed domain: ${info.url}"
+                val resolvedUrl = resolveUrl(info)
+                if (!isAllowedDownloadUrl(resolvedUrl)) {
+                    val msg = "Download URL not from allowed domain: $resolvedUrl"
                     logger.e(TAG, "$name: $msg")
                     _state.value = TrackState.Error(msg)
                     return@launch
                 }
                 _state.value = TrackState.Downloading(info, DownloadProgress(0, 0))
-                logger.i(TAG, "$name: Starting download from ${info.url}")
+                logger.i(TAG, "$name: Starting download from $resolvedUrl")
 
                 val dir = File(downloadDir)
                 dir.mkdirs()
                 val file = File(dir, downloadFilename)
 
-                val downloadStream = httpClient.openDownload(info.url)
+                val downloadStream = httpClient.openDownload(resolvedUrl)
                 val totalBytes = downloadStream.contentLength
                 val digest = MessageDigest.getInstance("SHA-256")
                 var bytesDownloaded = 0L
@@ -151,8 +154,23 @@ class UpdateTrack internal constructor(
     }
 
     private fun cancelActiveJob() {
-        activeJob?.cancel()
-        activeJob = null
+        if (activeJob != null) {
+            logger.d(TAG, "$name: Cancelling active job")
+            activeJob?.cancel()
+            activeJob = null
+        }
+    }
+
+    private suspend fun resolveUrl(info: UpdateInfo): String {
+        val resolver = urlResolver ?: return info.url
+        return try {
+            resolver(info)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.w(TAG, "$name: URL resolver failed, falling back to cached URL: ${e.message}")
+            info.url
+        }
     }
 
     private fun isAllowedDownloadUrl(url: String): Boolean =

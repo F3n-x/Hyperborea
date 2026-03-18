@@ -62,14 +62,18 @@ class AppInstaller @Inject constructor(
 
     override suspend fun finalize(path: String) = withContext(Dispatchers.IO) {
         logger.i(TAG, "Finalizing app update, deleting APK and restarting")
-        File(path).delete()
+        if (!File(path).delete()) {
+            logger.w(TAG, "Failed to delete APK: $path")
+        }
         try {
             delay(RESTART_DELAY_MS)
+            // Run in a single shell process — force-stop kills our process,
+            // but the shell child gets re-parented to init and continues to am start
             Runtime.getRuntime().exec(
-                arrayOf("am", "force-stop", "com.nettarion.hyperborea"),
-            ).waitFor()
-            Runtime.getRuntime().exec(
-                arrayOf("am", "start", "-n", "com.nettarion.hyperborea/.MainActivity"),
+                arrayOf(
+                    "sh", "-c",
+                    "am force-stop com.nettarion.hyperborea && am start -n com.nettarion.hyperborea/.MainActivity",
+                ),
             )
         } catch (e: Exception) {
             logger.e(TAG, "App restart failed", e)

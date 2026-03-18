@@ -20,6 +20,7 @@ local.properties
 *.aab
 *.ap_
 *.dex
+release/*.zip
 
 # Signing keys
 release.jks

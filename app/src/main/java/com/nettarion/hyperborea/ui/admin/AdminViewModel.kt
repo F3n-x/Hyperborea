@@ -169,6 +169,7 @@ class AdminViewModel @Inject constructor(
     fun installUpdate() = updateManager.appTrack.install()
     fun finalizeUpdate() = updateManager.appTrack.finalizeInstall()
     fun dismissUpdate() = updateManager.appTrack.dismiss()
+    fun applyUpdate() = updateManager.applyUpdate()
 
     fun toggleBroadcast(id: BroadcastId, enabled: Boolean) =
         userPreferences.setBroadcastEnabled(id, enabled)

@@ -1,10 +1,12 @@
 package com.nettarion.hyperborea.sensor.hrm
 
+import android.annotation.SuppressLint
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import com.nettarion.hyperborea.core.adapter.DiscoveredSensor
 import kotlinx.coroutines.channels.SendChannel
 
+@SuppressLint("MissingPermission") // API 25 system app — BLE permissions are install-time granted
 internal class HrmScanCallback(
     private val channel: SendChannel<DiscoveredSensor>,
 ) : ScanCallback() {

@@ -26,7 +26,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nettarion.hyperborea.core.LicenseState
+import com.nettarion.hyperborea.platform.update.TrackState
 import com.nettarion.hyperborea.ui.AppScreen
+import com.nettarion.hyperborea.ui.admin.AdminViewModel
+import com.nettarion.hyperborea.ui.admin.UpdateDialog
 import com.nettarion.hyperborea.ui.dashboard.DashboardScreen
 import com.nettarion.hyperborea.ui.license.LicenseViewModel
 import com.nettarion.hyperborea.ui.license.PairingScreen
@@ -115,6 +118,18 @@ private fun MainApp(
     onUnlinkDevice: () -> Unit,
     pendingStopDialog: MutableState<Boolean>,
 ) {
+    val adminViewModel: AdminViewModel = hiltViewModel()
+    val appTrackState by adminViewModel.appTrackState.collectAsStateWithLifecycle()
+
+    if (appTrackState != TrackState.Idle) {
+        UpdateDialog(
+            trackState = appTrackState,
+            onUpdateNow = adminViewModel::applyUpdate,
+            onLater = adminViewModel::dismissUpdate,
+            onDismissError = adminViewModel::dismissUpdate,
+        )
+    }
+
     var backStack by remember { mutableStateOf(listOf<AppScreen>(AppScreen.ProfilePicker())) }
     val currentScreen = backStack.last()
 

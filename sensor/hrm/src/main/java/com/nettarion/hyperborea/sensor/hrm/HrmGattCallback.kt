@@ -1,5 +1,6 @@
 package com.nettarion.hyperborea.sensor.hrm
 
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
@@ -9,6 +10,7 @@ import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.adapter.SensorReading
 import java.util.UUID
 
+@SuppressLint("MissingPermission") // API 25 system app — BLE permissions are install-time granted
 internal class HrmGattCallback(
     private val logger: AppLogger,
     private val onConnectionStateChange: (connected: Boolean) -> Unit,
