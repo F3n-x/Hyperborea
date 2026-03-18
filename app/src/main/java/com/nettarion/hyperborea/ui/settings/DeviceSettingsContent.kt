@@ -224,6 +224,34 @@ fun DeviceSettingsContent(
     HorizontalDivider(color = colors.divider)
     Spacer(Modifier.height(16.dp))
 
+    // Overlay position reset
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "System Overlay",
+                style = MaterialTheme.typography.bodyLarge,
+                color = colors.textHigh,
+            )
+            Text(
+                text = "Reset overlay to default position",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.textMedium,
+            )
+        }
+        OutlinedButton(onClick = { adminViewModel.resetOverlayPosition() }) {
+            Text("Reset position")
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    HorizontalDivider(color = colors.divider)
+    Spacer(Modifier.height(16.dp))
+
     // Unlink Device
     Row(
         modifier = Modifier

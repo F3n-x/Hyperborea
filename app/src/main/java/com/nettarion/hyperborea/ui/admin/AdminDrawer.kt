@@ -90,7 +90,12 @@ fun AdminDrawer(
                     .align(Alignment.CenterEnd)
                     .width(480.dp)
                     .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.surface),
+                    .background(MaterialTheme.colorScheme.surface)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                        onClick = {},
+                    ),
             ) {
                 // Header
                 Row(
@@ -112,30 +117,17 @@ fun AdminDrawer(
                 HorizontalDivider(color = colors.divider)
 
                 // Broadcasts section
-                BroadcastsSection(viewModel)
-
-                Spacer(Modifier.weight(1f))
-
-                // Open Settings button
-                HorizontalDivider(color = colors.divider)
-                OutlinedButton(
-                    onClick = {
-                        onClose()
-                        onOpenSettings()
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                ) {
-                    Text("Open Settings")
-                }
+                BroadcastsSection(viewModel, onOpenSettings = {
+                    onClose()
+                    onOpenSettings()
+                })
             }
         }
     }
 }
 
 @Composable
-private fun BroadcastsSection(viewModel: AdminViewModel) {
+private fun BroadcastsSection(viewModel: AdminViewModel, onOpenSettings: () -> Unit = {}) {
     val colors = LocalHyperboreaColors.current
     val enabledBroadcasts by viewModel.enabledBroadcasts.collectAsStateWithLifecycle()
     val overlayEnabled by viewModel.overlayEnabled.collectAsStateWithLifecycle()
@@ -236,6 +228,17 @@ private fun BroadcastsSection(viewModel: AdminViewModel) {
             FanModeChip("Auto", fanMode == FanMode.AUTO) { viewModel.setFanMode(FanMode.AUTO) }
             FanModeChip("Wind", fanMode == FanMode.WIND_SIMULATION) { viewModel.setFanMode(FanMode.WIND_SIMULATION) }
         }
+    }
+
+    HorizontalDivider(color = colors.divider, modifier = Modifier.padding(vertical = 4.dp))
+
+    OutlinedButton(
+        onClick = onOpenSettings,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Text("Open Settings")
     }
 }
 

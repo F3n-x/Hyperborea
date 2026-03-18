@@ -40,12 +40,21 @@ fun DashboardScreen(
     onSwitchProfile: () -> Unit,
     onViewRide: (rideId: Long) -> Unit,
     onOpenSettings: () -> Unit,
+    pendingStopDialog: androidx.compose.runtime.MutableState<Boolean> = remember { mutableStateOf(false) },
     viewModel: DashboardViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var drawerOpen by remember { mutableStateOf(false) }
     var showStopDialog by remember { mutableStateOf(false) }
     val colors = LocalHyperboreaColors.current
+
+    // Auto-show stop dialog when triggered from overlay
+    LaunchedEffect(pendingStopDialog.value) {
+        if (pendingStopDialog.value) {
+            showStopDialog = true
+            pendingStopDialog.value = false
+        }
+    }
 
     // Post-save navigation (Save & View)
     val postSaveEvent by viewModel.postSaveEvent.collectAsStateWithLifecycle()

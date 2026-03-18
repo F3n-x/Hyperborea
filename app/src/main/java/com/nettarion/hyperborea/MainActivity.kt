@@ -1,5 +1,6 @@
 package com.nettarion.hyperborea
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -14,6 +15,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,8 +44,11 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    private val pendingStopDialog = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleStopDialogIntent(intent)
         enableEdgeToEdge()
         setContent {
             HyperboreaTheme {
@@ -66,8 +71,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     is LicenseState.Unlicensed -> {
+                        val hasNetwork by licenseVm.hasNetwork.collectAsStateWithLifecycle()
                         UnlicensedScreen(
                             licenseState = state,
+                            hasNetwork = hasNetwork,
                             onLinkDevice = licenseVm::requestPairing,
                         )
                     }
@@ -80,16 +87,34 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     is LicenseState.Licensed -> {
-                        MainApp(onUnlinkDevice = licenseVm::unlinkDevice)
+                        MainApp(
+                            onUnlinkDevice = licenseVm::unlinkDevice,
+                            pendingStopDialog = pendingStopDialog,
+                        )
                     }
                 }
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleStopDialogIntent(intent)
+    }
+
+    private fun handleStopDialogIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("show_stop_dialog", false) == true) {
+            pendingStopDialog.value = true
+            intent.removeExtra("show_stop_dialog")
+        }
+    }
 }
 
 @Composable
-private fun MainApp(onUnlinkDevice: () -> Unit) {
+private fun MainApp(
+    onUnlinkDevice: () -> Unit,
+    pendingStopDialog: MutableState<Boolean>,
+) {
     var backStack by remember { mutableStateOf(listOf<AppScreen>(AppScreen.ProfilePicker())) }
     val currentScreen = backStack.last()
 
@@ -111,6 +136,7 @@ private fun MainApp(onUnlinkDevice: () -> Unit) {
             onSwitchProfile = { navigateReplace(AppScreen.ProfilePicker(autoSelect = false)) },
             onViewRide = { rideId -> navigateTo(AppScreen.RideDetail(rideId)) },
             onOpenSettings = { navigateTo(AppScreen.Settings) },
+            pendingStopDialog = pendingStopDialog,
         )
         is AppScreen.ProfileEdit -> ProfileEditScreen(
             profileId = screen.profileId,

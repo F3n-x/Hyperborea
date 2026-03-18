@@ -23,6 +23,7 @@ class OverlayBarView(
     private val onPauseClick: () -> Unit,
     private val onResumeClick: () -> Unit,
     private val onStopClick: () -> Unit,
+    private val onPositionChanged: ((x: Int, y: Int) -> Unit)? = null,
 ) : FrameLayout(context) {
 
     private val resValue: TextView
@@ -229,6 +230,10 @@ class OverlayBarView(
                     layoutParams.x = startParamX + (event.rawX.toInt() - startX)
                     layoutParams.y = startParamY + (event.rawY.toInt() - startY)
                     windowManager.updateViewLayout(this@OverlayBarView, layoutParams)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    onPositionChanged?.invoke(layoutParams.x, layoutParams.y)
                     true
                 }
                 else -> false

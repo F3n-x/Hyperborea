@@ -52,7 +52,13 @@ class HyperboreaService : Service() {
             scope = scope,
             onPause = { pause() },
             onResume = { resume() },
-            onStop = { deactivate(saveRide = true) },
+            onStop = {
+                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                    ?: Intent(this, MainActivity::class.java)
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                launchIntent.putExtra("show_stop_dialog", true)
+                startActivity(launchIntent)
+            },
         )
         scope.launch {
             orchestrator.probe()

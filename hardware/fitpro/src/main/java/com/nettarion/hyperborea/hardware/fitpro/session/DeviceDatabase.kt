@@ -18,7 +18,10 @@ object DeviceDatabase {
         val powerCurveIndex: Int? = null,
     )
 
-    fun fromModel(modelNumber: Int): DeviceInfo = FALLBACK.toDeviceInfo()
+    fun fromModel(modelNumber: Int): DeviceInfo {
+        val record = lookupModelNumber(modelNumber) ?: FALLBACK
+        return record.toDeviceInfo()
+    }
 
     fun fromHandshake(modelNumber: Int, partNumber: Int): DeviceInfo {
         val record = lookupPartNumber(partNumber) ?: FALLBACK
@@ -106,6 +109,22 @@ object DeviceDatabase {
         inclineStep = 0.5f,
         speedStep = 0.5f,
     )
+
+    // Model number lookup via ICON part number suffix matching.
+    // Model number comes from V1 handshake SystemInfoResponse (e.g. 2117 → "EBNT02117").
+    private fun lookupModelNumber(modelNumber: Int): DeviceRecord? {
+        val modelStr = modelNumber.toString()
+        for (i in IfitDeviceCatalog.iconPartNumberIndices.indices) {
+            val iconIdx = IfitDeviceCatalog.iconPartNumberIndices[i].toInt()
+            if (iconIdx >= 0) {
+                val iconPn = IfitDeviceCatalog.iconPartNumbers[iconIdx]
+                if (iconPn.endsWith(modelStr)) {
+                    return lookupPartNumber(IfitDeviceCatalog.partNumbers[i])
+                }
+            }
+        }
+        return null
+    }
 
     // Part number lookup via IfitDeviceCatalog (sorted parallel arrays, binary search).
     // Part number comes from V1 handshake SystemInfoResponse.

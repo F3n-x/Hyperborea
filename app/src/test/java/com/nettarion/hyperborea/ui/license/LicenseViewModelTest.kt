@@ -9,6 +9,9 @@ import com.nettarion.hyperborea.core.LicenseChecker
 import com.nettarion.hyperborea.core.LicenseState
 import com.nettarion.hyperborea.core.PairingSession
 import com.nettarion.hyperborea.core.PairingStatus
+import com.nettarion.hyperborea.core.system.SystemMonitor
+import com.nettarion.hyperborea.core.system.SystemSnapshot
+import com.nettarion.hyperborea.core.system.SystemStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +44,30 @@ class LicenseViewModelTest {
     private var pairingResult: PairingSession = PairingSession.Error("stub")
     private var pollResult: PairingStatus = PairingStatus.Pending
 
+    private val systemSnapshot = MutableStateFlow(
+        SystemSnapshot(
+            status = SystemStatus(
+                isBluetoothLeEnabled = false,
+                isBluetoothLeAdvertisingSupported = false,
+                isWifiEnabled = false,
+                wifiIpAddress = null,
+                isUsbHostAvailable = false,
+                isAdbEnabled = false,
+                isRootAvailable = false,
+                isSeLinuxEnforcing = false,
+            ),
+            packages = emptyList(),
+            components = emptyList(),
+            usbDevices = emptyList(),
+            timestamp = 0L,
+        )
+    )
+
+    private val fakeSystemMonitor = object : SystemMonitor {
+        override val snapshot: StateFlow<SystemSnapshot> = systemSnapshot
+        override suspend fun refresh() {}
+    }
+
     private val fakeLicenseChecker = object : LicenseChecker {
         override val state: StateFlow<LicenseState> = licenseState
         override val authToken: String? = null
@@ -59,6 +86,7 @@ class LicenseViewModelTest {
     private fun createViewModel() {
         viewModel = LicenseViewModel(
             licenseChecker = fakeLicenseChecker,
+            systemMonitor = fakeSystemMonitor,
             context = ContextWrapper(null),
         )
     }
@@ -140,6 +168,53 @@ class LicenseViewModelTest {
 
         assertThat(checkCallCount).isEqualTo(1)
         assertThat(lastCheckSilent).isFalse()
+    }
+
+    @Test
+    fun `retries check silently when wifi appears while unlicensed`() = runViewModelTest {
+        createViewModel()
+        runCurrent()
+        licenseState.value = LicenseState.Unlicensed
+        checkCallCount = 0
+
+        // Simulate WiFi becoming available
+        systemSnapshot.value = systemSnapshot.value.copy(
+            status = systemSnapshot.value.status.copy(wifiIpAddress = "192.168.1.100")
+        )
+        runCurrent()
+
+        assertThat(checkCallCount).isEqualTo(1)
+        assertThat(lastCheckSilent).isTrue()
+    }
+
+    @Test
+    fun `does not retry when wifi appears while licensed`() = runViewModelTest {
+        createViewModel()
+        runCurrent()
+        licenseState.value = LicenseState.Licensed
+        checkCallCount = 0
+
+        systemSnapshot.value = systemSnapshot.value.copy(
+            status = systemSnapshot.value.status.copy(wifiIpAddress = "192.168.1.100")
+        )
+        runCurrent()
+
+        assertThat(checkCallCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `hasNetwork reflects wifi ip state`() = runViewModelTest {
+        createViewModel()
+        runCurrent()
+
+        viewModel.hasNetwork.test {
+            assertThat(awaitItem()).isFalse()
+
+            systemSnapshot.value = systemSnapshot.value.copy(
+                status = systemSnapshot.value.status.copy(wifiIpAddress = "192.168.1.100")
+            )
+            assertThat(awaitItem()).isTrue()
+        }
     }
 
     @Test

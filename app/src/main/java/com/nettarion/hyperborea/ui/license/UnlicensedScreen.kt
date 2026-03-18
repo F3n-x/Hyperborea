@@ -27,6 +27,7 @@ import com.nettarion.hyperborea.ui.theme.LocalHyperboreaColors
 @Composable
 fun UnlicensedScreen(
     licenseState: LicenseState,
+    hasNetwork: Boolean,
     onLinkDevice: () -> Unit,
 ) {
     val colors = LocalHyperboreaColors.current
@@ -58,9 +59,13 @@ fun UnlicensedScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Link this device to your Hyperborea account to get started.",
+                text = if (hasNetwork) {
+                    "Link this device to your Hyperborea account to get started."
+                } else {
+                    "No network connection. Waiting for WiFi..."
+                },
                 style = MaterialTheme.typography.bodyLarge,
-                color = colors.textMedium,
+                color = if (hasNetwork) colors.textMedium else colors.textLow,
             )
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -70,7 +75,7 @@ fun UnlicensedScreen(
                     loading = true
                     onLinkDevice()
                 },
-                enabled = !loading,
+                enabled = !loading && hasNetwork,
             ) {
                 if (loading) {
                     CircularProgressIndicator(

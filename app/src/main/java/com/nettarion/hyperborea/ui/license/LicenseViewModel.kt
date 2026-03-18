@@ -9,12 +9,15 @@ import com.nettarion.hyperborea.core.LicenseChecker
 import com.nettarion.hyperborea.core.LicenseState
 import com.nettarion.hyperborea.core.PairingSession
 import com.nettarion.hyperborea.core.PairingStatus
+import com.nettarion.hyperborea.core.system.SystemMonitor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -22,11 +25,16 @@ import javax.inject.Inject
 @HiltViewModel
 class LicenseViewModel @Inject constructor(
     private val licenseChecker: LicenseChecker,
+    private val systemMonitor: SystemMonitor,
     @param:ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     val licenseState: StateFlow<LicenseState> = licenseChecker.state
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LicenseState.Checking)
+
+    val hasNetwork: StateFlow<Boolean> = systemMonitor.snapshot
+        .map { it.status.wifiIpAddress != null }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     private var pollingJob: Job? = null
 
@@ -41,6 +49,17 @@ class LicenseViewModel @Inject constructor(
                 delay(LICENSE_RECHECK_INTERVAL_MS)
                 licenseChecker.check(silent = true)
             }
+        }
+        // Auto-retry when WiFi becomes available while unlicensed
+        viewModelScope.launch {
+            systemMonitor.snapshot
+                .map { it.status.wifiIpAddress }
+                .distinctUntilChanged()
+                .collect { ip ->
+                    if (ip != null && licenseChecker.state.value is LicenseState.Unlicensed) {
+                        licenseChecker.check(silent = true)
+                    }
+                }
         }
     }
 

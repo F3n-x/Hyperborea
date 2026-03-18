@@ -23,7 +23,7 @@ Hyperborea is an Android app that bridges ICON Fitness equipment (NordicTrack, P
 
 ## Device Commands
 
-After rebooting the device, use `adb wait-for-device` to block until ADB reconnects before running subsequent commands (e.g., `adb wait-for-device shell am start ...`).
+The device connects over WiFi (ADB over TCP). After rebooting, use `adb wait-for-device` to block until ADB reconnects, then poll `getprop sys.boot_completed` until it returns `1` (wait-for-device returns before boot finishes).
 
 ## Architecture
 

@@ -176,6 +176,11 @@ class AdminViewModel @Inject constructor(
     fun toggleOverlay(enabled: Boolean) =
         userPreferences.setOverlayEnabled(enabled)
 
+    fun resetOverlayPosition() {
+        context.getSharedPreferences("overlay_position", Context.MODE_PRIVATE)
+            .edit().clear().apply()
+    }
+
     fun setFanMode(mode: FanMode) =
         userPreferences.setFanMode(mode)
 

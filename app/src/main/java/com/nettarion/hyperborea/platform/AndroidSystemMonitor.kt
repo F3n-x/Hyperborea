@@ -57,6 +57,7 @@ class AndroidSystemMonitor @Inject constructor(
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
         context.registerReceiver(receiver, filter)
+        updateStatus()
         logger.i(TAG, "System monitor started")
     }
 

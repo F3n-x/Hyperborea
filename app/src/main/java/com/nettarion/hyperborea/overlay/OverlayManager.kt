@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
@@ -35,6 +36,7 @@ class OverlayManager(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private var view: OverlayBarView? = null
     private var exerciseDataJob: Job? = null
     private var stateJob: Job? = null
@@ -104,6 +106,7 @@ class OverlayManager(
             onPauseClick = onPause,
             onResumeClick = onResume,
             onStopClick = onStop,
+            onPositionChanged = { x, y -> savePosition(x, y) },
         )
 
         windowManager.addView(overlayView, params)
@@ -215,12 +218,30 @@ class OverlayManager(
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = 100
+            x = prefs.getInt(KEY_X, DEFAULT_X)
+            y = prefs.getInt(KEY_Y, DEFAULT_Y)
         }
+    }
+
+    private fun savePosition(x: Int, y: Int) {
+        prefs.edit().putInt(KEY_X, x).putInt(KEY_Y, y).apply()
+    }
+
+    fun resetPosition() {
+        prefs.edit().remove(KEY_X).remove(KEY_Y).apply()
+        val v = view ?: return
+        val params = v.layoutParams as WindowManager.LayoutParams
+        params.x = DEFAULT_X
+        params.y = DEFAULT_Y
+        windowManager.updateViewLayout(v, params)
     }
 
     companion object {
         private const val TAG = "Overlay"
+        private const val PREFS_NAME = "overlay_position"
+        private const val KEY_X = "x"
+        private const val KEY_Y = "y"
+        private const val DEFAULT_X = 0
+        private const val DEFAULT_Y = 100
     }
 }
