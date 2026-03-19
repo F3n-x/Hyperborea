@@ -189,13 +189,15 @@ class AndroidSystemMonitor @Inject constructor(
 
     private fun captureUsbDevices(): List<UsbDeviceInfo> {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
-        return usbManager?.deviceList?.values?.map { dev ->
+            ?: return emptyList()
+        return usbManager.deviceList?.values?.map { dev ->
             UsbDeviceInfo(
                 vendorId = dev.vendorId,
                 productId = dev.productId,
                 deviceName = dev.deviceName,
                 manufacturerName = dev.manufacturerName,
                 productName = dev.productName,
+                hasPermission = usbManager.hasPermission(dev),
             )
         } ?: emptyList()
     }

@@ -43,7 +43,7 @@ class FitProAdapter @Inject constructor(
             description = "FitPro USB device must be accessible",
             isMet = { snapshot ->
                 snapshot.usbDevices.any {
-                    it.vendorId == FITPRO_VENDOR_ID && it.productId in FITPRO_PRODUCT_IDS
+                    it.vendorId == FITPRO_VENDOR_ID && it.productId in FITPRO_PRODUCT_IDS && it.hasPermission
                 }
             },
             fulfill = { controller ->

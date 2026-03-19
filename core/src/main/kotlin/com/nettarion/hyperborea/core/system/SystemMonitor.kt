@@ -19,6 +19,7 @@ data class UsbDeviceInfo(
     val deviceName: String?,
     val manufacturerName: String?,
     val productName: String?,
+    val hasPermission: Boolean = true,
 )
 
 data class InstalledPackage(

@@ -132,6 +132,24 @@ cleanup() { stop_timer; }
 trap cleanup EXIT
 
 # =========================================================================
+# Helpers
+# =========================================================================
+is_ip_connection() {
+    [[ "${ANDROID_SERIAL:-}" == *:* ]]
+}
+
+# Escalate to root and wait for ADB to reconnect (handles both USB and IP).
+adb_root_wait() {
+    adb root >/dev/null 2>&1 || true
+    if is_ip_connection; then
+        sleep 2
+        adb connect "$ANDROID_SERIAL" >/dev/null 2>&1 || true
+        sleep 1
+    fi
+    adb wait-for-device 2>/dev/null
+}
+
+# =========================================================================
 # Device Discovery
 # =========================================================================
 discover_device() {
@@ -166,8 +184,7 @@ discover_device() {
             export ANDROID_SERIAL="${SERIALS[$CHOSEN]}"
             echo ""
             info "Connecting..."
-            adb root >/dev/null 2>&1 || true
-            adb wait-for-device
+            adb_root_wait
             ok "Connected to ${SERIALS[$CHOSEN]}"
             return
         fi
@@ -184,8 +201,7 @@ discover_device() {
         sleep 2
         if adb -s "$DEVICE_IP" shell true 2>/dev/null; then
             export ANDROID_SERIAL="$DEVICE_IP"
-            adb root >/dev/null 2>&1 || true
-            adb wait-for-device
+            adb_root_wait
             ok "Connected to $DEVICE_IP"
             return
         fi
@@ -203,32 +219,27 @@ wait_for_reboot() {
     local max_wait=${1:-300}
     local wait_start=$(date +%s)
 
-    # Block until ADB reconnects to the device
-    adb wait-for-device 2>/dev/null &
-    local WAIT_PID=$!
+    # Wait for device to actually go offline (avoids false boot_completed=1
+    # from the still-running system before reboot takes effect)
+    while adb shell true 2>/dev/null; do sleep 1; done
 
-    while kill -0 $WAIT_PID 2>/dev/null; do
-        local elapsed=$(( $(date +%s) - wait_start ))
-        if [ "$elapsed" -gt "$max_wait" ]; then
-            kill $WAIT_PID 2>/dev/null || true
-            stop_timer
-            die "Timed out after ${max_wait}s. Try reconnecting manually."
-        fi
-        sleep 1
-    done
-    wait $WAIT_PID 2>/dev/null || true
-
-    # Device is back, but boot may not be complete yet
+    # Single poll loop: reconnect (if IP) → check boot_completed → retry
     while true; do
         local elapsed=$(( $(date +%s) - wait_start ))
         if [ "$elapsed" -gt "$max_wait" ]; then
             stop_timer
-            die "Timed out after ${max_wait}s waiting for boot."
+            die "Timed out after ${max_wait}s. Try reconnecting manually."
+        fi
+
+        # IP connections need periodic reconnect attempts since ADB
+        # won't auto-reconnect a TCP socket after the device reboots
+        if is_ip_connection; then
+            adb connect "$ANDROID_SERIAL" >/dev/null 2>&1 || true
+            sleep 2
         fi
 
         if adb shell "getprop sys.boot_completed" 2>/dev/null | grep -q "1"; then
-            adb root >/dev/null 2>&1 || true
-            adb wait-for-device
+            adb_root_wait
             break
         fi
 
@@ -253,11 +264,15 @@ for f in "$APPS_DIR"/Hyperborea*.apk; do
 done
 [ -n "$HYPERBOREA_APK" ] || die "No Hyperborea*.apk found in apps/. Place the APK there and try again."
 
+# BLE overlay is pushed to /vendor/overlay/ separately — exclude from adb install
+OVERLAY_APK="$APPS_DIR/BluetoothPeripheralOverlay.apk"
+
 # Collect other APKs
 OTHER_APKS=()
 for f in "$APPS_DIR"/*.apk; do
     [ -f "$f" ] || continue
     [ "$f" = "$HYPERBOREA_APK" ] && continue
+    [ "$f" = "$OVERLAY_APK" ] && continue
     OTHER_APKS+=("$f")
 done
 
@@ -278,35 +293,45 @@ ok "Root access confirmed"
 # =========================================================================
 # Step 3: Install Hyperborea as priv-app
 # =========================================================================
-step 2 "Install Hyperborea as system app"
+step 2 "Install Hyperborea"
 
-info "Remounting /system read-write..."
-adb shell "mount -o rw,remount /system" >/dev/null 2>&1
-ok "System partition mounted read-write"
+info "Preparing device..."
+adb shell "mount -o rw,remount /system" >/dev/null 2>&1 || true
+ok "Device ready"
 
-info "Pushing APK to /system/priv-app/Hyperborea/..."
+info "Installing..."
 adb shell "mkdir -p /system/priv-app/Hyperborea" >/dev/null 2>&1
 adb push "$HYPERBOREA_APK" /system/priv-app/Hyperborea/Hyperborea.apk >/dev/null 2>&1
-ok "APK pushed"
-
-info "Setting permissions..."
 adb shell "chmod 755 /system/priv-app/Hyperborea && chmod 644 /system/priv-app/Hyperborea/Hyperborea.apk" >/dev/null 2>&1
-ok "Permissions set (755/644)"
+ok "Installed"
 
-info "Remounting /system read-only..."
-adb shell "mount -o ro,remount /system" >/dev/null 2>&1
-ok "System partition mounted read-only"
+if [ -f "$OVERLAY_APK" ]; then
+    info "Applying configuration..."
+    adb shell "mkdir -p /vendor/overlay" >/dev/null 2>&1
+    adb push "$OVERLAY_APK" /vendor/overlay/BluetoothPeripheralOverlay.apk >/dev/null 2>&1
+    adb shell "chmod 644 /vendor/overlay/BluetoothPeripheralOverlay.apk" >/dev/null 2>&1
+    ok "Configuration applied"
+fi
+
+info "Finalizing..."
+adb shell "mount -o ro,remount /system" >/dev/null 2>&1 || true
+if adb shell "[ -f /data/update.zip ] || touch /data/update.zip; toybox chattr +i /data/update.zip" >/dev/null 2>&1; then
+    true
+else
+    warn "Some protections could not be applied"
+fi
+adb shell "touch /sdcard/.wolfDev" >/dev/null 2>&1
+ok "Done"
 
 # =========================================================================
 # Step 4: Reboot and wait
 # =========================================================================
 step 3 "Reboot device"
 
-info "Rebooting (PackageManager scans /system/priv-app/ at boot)..."
+info "Rebooting..."
 REBOOT_START=$(date +%s)
-adb reboot >/dev/null 2>&1
-
 start_timer "Waiting for device..." "$REBOOT_START"
+adb reboot >/dev/null 2>&1
 wait_for_reboot 300
 stop_timer
 ok "Device ready ($(fmt_time $(( $(date +%s) - REBOOT_START ))))"
@@ -360,20 +385,20 @@ PASS=0; TOTAL=0
 PKG_PATH=$(get PATH)
 TOTAL=$((TOTAL + 1))
 if echo "$PKG_PATH" | grep -q "/system/priv-app/"; then
-    ok "Install path: $PKG_PATH"
+    ok "Install location OK"
     PASS=$((PASS + 1))
 else
-    fail "Install path: expected /system/priv-app/, got '$PKG_PATH'"
+    fail "Install location incorrect"
 fi
 
 # Check PRIVILEGED flag
 PKG_PRIVFLAGS=$(get PRIVFLAGS)
 TOTAL=$((TOTAL + 1))
 if echo "$PKG_PRIVFLAGS" | grep -q "PRIVILEGED"; then
-    ok "Privileged: yes"
+    ok "Permissions OK"
     PASS=$((PASS + 1))
 else
-    fail "Privileged: not set (privateFlags='$PKG_PRIVFLAGS')"
+    fail "Permissions not granted"
 fi
 
 echo ""

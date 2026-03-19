@@ -80,6 +80,16 @@ class FitProAdapterTest {
     }
 
     @Test
+    fun `prerequisite is NOT met when device present but no permission`() {
+        val adapter = createAdapter(TestScope())
+        val snapshot = buildSystemSnapshot(
+            usbDevices = listOf(fitProUsbDevice(productId = 2).copy(hasPermission = false)),
+        )
+        val prereq = adapter.prerequisites.single()
+        assertThat(prereq.isMet(snapshot)).isFalse()
+    }
+
+    @Test
     fun `prerequisite is NOT met when different USB device present`() {
         val adapter = createAdapter(TestScope())
         val snapshot = buildSystemSnapshot(

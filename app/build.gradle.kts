@@ -104,8 +104,8 @@ android {
             )
         }
         onVariants(selector().withFlavor("target" to "standard")) { variant ->
-            val debugConfig = signingConfigs.getByName("debug")
-            val fingerprint = signingConfigFingerprint(debugConfig)
+            val configName = if (variant.buildType == "release") "release" else "debug"
+            val fingerprint = signingConfigFingerprint(signingConfigs.getByName(configName))
             variant.buildConfigFields?.put(
                 "SIGNING_CERTIFICATE_SHA256",
                 com.android.build.api.variant.BuildConfigField("String", "\"$fingerprint\"", null)
