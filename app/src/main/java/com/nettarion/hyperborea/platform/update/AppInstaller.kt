@@ -1,11 +1,12 @@
 package com.nettarion.hyperborea.platform.update
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageInstaller
 import com.nettarion.hyperborea.core.AppLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -38,21 +39,24 @@ class AppInstaller @Inject constructor(
                     }
                     s.fsync(out)
                 }
-                // Commit synchronously — system apps get instant install
-                val intent = android.content.Intent()
-                val pendingIntent = android.app.PendingIntent.getBroadcast(
+
+                // Delete APK before commit — data is already in the session's
+                // internal storage. PackageManager kills our process during
+                // package replacement, so cleanup must happen first.
+                // The system sends ACTION_MY_PACKAGE_REPLACED after install,
+                // which UpdateRestartReceiver handles to relaunch the activity.
+                file.delete()
+
+                val intent = Intent()
+                val pendingIntent = PendingIntent.getBroadcast(
                     context, sessionId, intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                    PendingIntent.FLAG_UPDATE_CURRENT,
                 )
                 s.commit(pendingIntent.intentSender)
             }
 
-            // Verify install succeeded by checking versionCode changed
-            delay(INSTALL_SETTLE_MS)
-            @Suppress("DEPRECATION")
-            val installed = context.packageManager
-                .getPackageInfo(context.packageName, 0).versionCode
-            logger.i(TAG, "Post-install versionCode: $installed")
+            // Process will likely be killed before reaching here.
+            logger.i(TAG, "Commit sent, awaiting process restart")
             InstallResult.Success
         } catch (e: Exception) {
             logger.e(TAG, "APK install exception", e)
@@ -61,29 +65,14 @@ class AppInstaller @Inject constructor(
     }
 
     override suspend fun finalize(path: String) = withContext(Dispatchers.IO) {
-        logger.i(TAG, "Finalizing app update, deleting APK and restarting")
-        if (!File(path).delete()) {
-            logger.w(TAG, "Failed to delete APK: $path")
-        }
-        try {
-            delay(RESTART_DELAY_MS)
-            // Run in a single shell process — force-stop kills our process,
-            // but the shell child gets re-parented to init and continues to am start
-            Runtime.getRuntime().exec(
-                arrayOf(
-                    "sh", "-c",
-                    "am force-stop com.nettarion.hyperborea && am start -n com.nettarion.hyperborea/.MainActivity",
-                ),
-            )
-        } catch (e: Exception) {
-            logger.e(TAG, "App restart failed", e)
-        }
+        // Normally unreachable for self-updates (process dies during install).
+        // Clean up in case it runs.
+        logger.i(TAG, "Finalizing app update")
+        File(path).delete()
         Unit
     }
 
     companion object {
         private const val TAG = "AppInstaller"
-        private const val INSTALL_SETTLE_MS = 2000L
-        private const val RESTART_DELAY_MS = 1500L
     }
 }

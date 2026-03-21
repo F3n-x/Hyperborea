@@ -28,6 +28,21 @@ class IfitEcosystemManager @Inject constructor() : EcosystemManager {
             },
         ),
         Prerequisite(
+            id = "glassos-service-stopped",
+            description = "GlassOS service must be stopped to release USB",
+            isMet = { snapshot ->
+                snapshot.components.none {
+                    it.packageName == GLASSOS_SERVICE_PACKAGE &&
+                        (it.state == ComponentState.RUNNING ||
+                            it.state == ComponentState.RUNNING_FOREGROUND)
+                }
+            },
+            fulfill = { controller ->
+                if (controller.forceStopPackage(GLASSOS_SERVICE_PACKAGE)) FulfillResult.Success
+                else FulfillResult.Failed("Failed to force-stop $GLASSOS_SERVICE_PACKAGE")
+            },
+        ),
+        Prerequisite(
             id = "eru-usb-receiver-disabled",
             description = "ERU USB receiver must be disabled to prevent USB cycling",
             isMet = { snapshot ->
@@ -46,6 +61,7 @@ class IfitEcosystemManager @Inject constructor() : EcosystemManager {
     )
 
     private companion object {
+        const val GLASSOS_SERVICE_PACKAGE = "com.ifit.glassos_service"
         const val IFIT_STANDALONE_PACKAGE = "com.ifit.standalone"
         const val ERU_PACKAGE = "com.ifit.eru"
         const val ERU_USB_RECEIVER = "com.ifit.eru.receivers.UsbDeviceAttachedReceiver"

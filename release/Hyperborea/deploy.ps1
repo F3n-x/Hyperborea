@@ -9,17 +9,17 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $AppsDir = Join-Path $ScriptDir "apps"
 
-$TotalSteps = 5
+$TotalSteps = 7
 
-function Write-Ok($msg)      { Write-Host "  " -NoNewline; Write-Host "+" -ForegroundColor Green -NoNewline; Write-Host " $msg" }
-function Write-Fail($msg)    { Write-Host "  " -NoNewline; Write-Host "x" -ForegroundColor Red -NoNewline; Write-Host " $msg" }
-function Write-Info($msg)    { Write-Host "  " -NoNewline; Write-Host ">" -ForegroundColor Cyan -NoNewline; Write-Host " $msg" }
+function Write-Ok($msg)      { Write-Host "  " -NoNewline; Write-Host "✓" -ForegroundColor Green -NoNewline; Write-Host " $msg" }
+function Write-Fail($msg)    { Write-Host "  " -NoNewline; Write-Host "✗" -ForegroundColor Red -NoNewline; Write-Host " $msg" }
+function Write-Info($msg)    { Write-Host "  " -NoNewline; Write-Host "→" -ForegroundColor Cyan -NoNewline; Write-Host " $msg" }
 function Write-Warn($msg)    { Write-Host "  " -NoNewline; Write-Host "!" -ForegroundColor Yellow -NoNewline; Write-Host " $msg" }
 function Write-Step($n, $msg) { Write-Host "`n[$n/$TotalSteps] $msg" -ForegroundColor Cyan }
 function Stop-WithError($msg) { Write-Fail $msg; exit 1 }
 
 function Format-Elapsed([int]$seconds) {
-    return "{0}:{1:d2}" -f [math]::Floor($seconds / 60), ($seconds % 60)
+    return "{0}:{1:d2}" -f [int][math]::Floor($seconds / 60), [int]($seconds % 60)
 }
 
 function Wait-Key {
@@ -43,7 +43,7 @@ function Read-Input {
             }
             continue
         }
-        if ($key.KeyChar) {
+        if ($key.KeyChar -ge ' ') {
             $buf += $key.KeyChar
             Write-Host -NoNewline $key.KeyChar
         }
@@ -65,11 +65,11 @@ function Select-Choice {
     $menuTop = [Console]::CursorTop
 
     function Draw-Choices {
+        [Console]::SetCursorPosition(0, $menuTop)
         for ($i = 0; $i -lt $count; $i++) {
-            Write-Host "`r" -NoNewline
-            [Console]::Write("    ")
+            Write-Host "    " -NoNewline
             if ($i -eq $cursor) {
-                Write-Host "> " -ForegroundColor Cyan -NoNewline
+                Write-Host "› " -ForegroundColor Cyan -NoNewline
             } else {
                 Write-Host "  " -NoNewline
             }
@@ -86,11 +86,167 @@ function Select-Choice {
         elseif ($key.VirtualKeyCode -eq 82) { if ($script:AllowRefresh) { return -2 } }
         elseif ($key.VirtualKeyCode -eq 27) { Write-Host ""; exit 0 }
         elseif ($key.VirtualKeyCode -eq 13) { break }
-        [Console]::SetCursorPosition(0, $menuTop)
         Draw-Choices
     }
 
     return $cursor
+}
+
+# =========================================================================
+# Wizard-style multi-step configuration
+# =========================================================================
+function Select-WizardConfig {
+    $numSections = $script:WizSections.Count
+    $currentStep = 0
+    $width = [Console]::WindowWidth
+
+    function Clear-Line {
+        $row = [Console]::CursorTop
+        [Console]::SetCursorPosition(0, $row)
+        [Console]::Write(" " * [Math]::Max(0, $width - 1))
+        [Console]::SetCursorPosition(0, $row)
+    }
+
+    while ($currentStep -lt $numSections) {
+        $secStart = $script:WizSecStart[$currentStep]
+        $secCount = $script:WizSecCount[$currentStep]
+        $isDone = $script:WizSections[$currentStep] -eq "Done"
+        $cursor = 0
+
+        # Build summary for Done step
+        $summaryItems = @()
+        if ($isDone) {
+            for ($s = 0; $s -lt $numSections - 1; $s++) {
+                $summaryItems += [PSCustomObject]@{ Type = 'header'; Text = $script:WizSections[$s]; State = 0 }
+                for ($j = 0; $j -lt $script:WizSecCount[$s]; $j++) {
+                    $idx = $script:WizSecStart[$s] + $j
+                    $summaryItems += [PSCustomObject]@{ Type = 'item'; Text = $script:WizLabels[$idx]; State = $script:WizStates[$idx] }
+                }
+            }
+        }
+
+        $contentLines = if ($isDone) { $summaryItems.Count + 2 } else { $secCount + 2 }
+        $totalLines = $contentLines + 4
+        $wizTop = [Console]::CursorTop
+
+        function Draw-TabBar {
+            [Console]::SetCursorPosition(0, $wizTop)
+            Clear-Line
+            Write-Host "  ←" -NoNewline
+            for ($s = 0; $s -lt $numSections; $s++) {
+                Write-Host "  " -NoNewline
+                if ($s -lt $currentStep) {
+                    Write-Host "✓" -ForegroundColor Green -NoNewline
+                    Write-Host " $($script:WizSections[$s])" -NoNewline
+                } elseif ($s -eq $currentStep) {
+                    Write-Host "●" -ForegroundColor Cyan -NoNewline
+                    Write-Host " $($script:WizSections[$s])" -NoNewline
+                } else {
+                    Write-Host "○ $($script:WizSections[$s])" -ForegroundColor DarkGray -NoNewline
+                }
+            }
+            Write-Host "  →"
+        }
+
+        function Draw-Content {
+            [Console]::SetCursorPosition(0, $wizTop + 4)
+            if ($isDone) {
+                foreach ($item in $summaryItems) {
+                    Clear-Line
+                    if ($item.Type -eq 'header') {
+                        Write-Host "    $($item.Text)"
+                    } elseif ($item.State -eq 1) {
+                        Write-Host "      " -NoNewline
+                        Write-Host "✓" -ForegroundColor Green -NoNewline
+                        Write-Host " $($item.Text)"
+                    } else {
+                        Write-Host "      ✗ $($item.Text)" -ForegroundColor DarkGray
+                    }
+                }
+            } else {
+                for ($i = 0; $i -lt $secCount; $i++) {
+                    Clear-Line
+                    $idx = $secStart + $i
+                    Write-Host "    " -NoNewline
+                    if ($i -eq $cursor) {
+                        Write-Host "› " -ForegroundColor Cyan -NoNewline
+                    } else {
+                        Write-Host "  " -NoNewline
+                    }
+                    if ($script:WizStates[$idx] -eq 1) {
+                        Write-Host "✓" -ForegroundColor Green -NoNewline
+                        Write-Host " $($script:WizLabels[$idx])"
+                    } else {
+                        Write-Host "✗ $($script:WizLabels[$idx])" -ForegroundColor DarkGray
+                    }
+                }
+            }
+            # Blank line
+            Clear-Line
+            Write-Host ""
+            # Action button
+            Clear-Line
+            $btnLabel = if ($isDone) { "Confirm" } else { "Continue →" }
+            Write-Host "    " -NoNewline
+            if ($cursor -eq $secCount) {
+                Write-Host "› " -ForegroundColor Cyan -NoNewline
+            } else {
+                Write-Host "  " -NoNewline
+            }
+            Write-Host "$btnLabel"
+        }
+
+        function Draw-Wizard {
+            Draw-TabBar
+            [Console]::SetCursorPosition(0, $wizTop + 1)
+            Clear-Line
+            Write-Host ""
+            Clear-Line
+            if ($isDone) {
+                Write-Host "    Enter confirm  -  Esc cancel" -ForegroundColor DarkGray
+            } else {
+                Write-Host "    Up/Down navigate  -  Space toggle  -  Enter continue  -  Esc cancel" -ForegroundColor DarkGray
+            }
+            Clear-Line
+            Write-Host ""
+            Draw-Content
+        }
+
+        Draw-Wizard
+
+        while ($true) {
+            $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            if ($key.VirtualKeyCode -eq 27) { exit 0 }            # Escape
+            if ($key.VirtualKeyCode -eq 13) { break }             # Enter
+            if ($key.VirtualKeyCode -eq 38) {                      # Up
+                if ($cursor -gt 0) { $cursor-- }
+            }
+            elseif ($key.VirtualKeyCode -eq 40) {                  # Down
+                if ($cursor -lt $secCount) { $cursor++ }
+            }
+            elseif ($key.VirtualKeyCode -eq 32) {                  # Space
+                if ($cursor -eq $secCount) {
+                    break                                           # Continue/Confirm
+                } elseif ($secCount -gt 0) {
+                    $idx = $secStart + $cursor
+                    $script:WizStates[$idx] = if ($script:WizStates[$idx] -eq 1) { 0 } else { 1 }
+                }
+            }
+            if ($contentLines -gt 0) {
+                Draw-Content
+            }
+        }
+
+        # Clear wizard area for next step
+        [Console]::SetCursorPosition(0, $wizTop)
+        for ($l = 0; $l -lt $totalLines; $l++) {
+            Clear-Line
+            Write-Host ""
+        }
+        [Console]::SetCursorPosition(0, $wizTop)
+
+        $currentStep++
+    }
 }
 
 # =========================================================================
@@ -136,6 +292,23 @@ function Stop-Timer {
 }
 
 # =========================================================================
+# Helpers
+# =========================================================================
+function Test-IpConnection {
+    return $env:ANDROID_SERIAL -and $env:ANDROID_SERIAL -match ':'
+}
+
+function Invoke-AdbRootWait {
+    & adb root 2>$null | Out-Null
+    if (Test-IpConnection) {
+        Start-Sleep -Seconds 2
+        & adb connect $env:ANDROID_SERIAL 2>$null | Out-Null
+        Start-Sleep -Seconds 1
+    }
+    & adb wait-for-device 2>$null | Out-Null
+}
+
+# =========================================================================
 # Device Discovery
 # =========================================================================
 function Find-Device {
@@ -163,8 +336,7 @@ function Find-Device {
             $env:ANDROID_SERIAL = $serials[$idx]
             Write-Host ""
             Write-Info "Connecting..."
-            & adb root 2>$null | Out-Null
-            & adb wait-for-device 2>$null | Out-Null
+            Invoke-AdbRootWait
             Write-Ok "Connected to $($serials[$idx])"
             return
         }
@@ -183,8 +355,7 @@ function Find-Device {
         & adb -s $ip shell true 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             $env:ANDROID_SERIAL = $ip
-            & adb root 2>$null | Out-Null
-            & adb wait-for-device 2>$null | Out-Null
+            Invoke-AdbRootWait
             Write-Ok "Connected to $ip"
             return
         }
@@ -203,36 +374,60 @@ function Wait-ForReboot {
 
     $waitStart = Get-Date
 
-    # Block until ADB reconnects to the device
-    $waitJob = Start-Job -ScriptBlock { & adb wait-for-device 2>$null }
-    while ($waitJob.State -eq 'Running') {
-        $elapsed = [int]((Get-Date) - $waitStart).TotalSeconds
-        if ($elapsed -gt $MaxWait) {
-            Stop-Job $waitJob; Remove-Job $waitJob
-            Stop-Timer
-            Stop-WithError "Timed out after ${MaxWait}s. Try reconnecting manually."
-        }
+    # Wait for device to actually go offline
+    while ($true) {
+        $null = & adb shell true 2>$null
+        if ($LASTEXITCODE -ne 0) { break }
         Start-Sleep -Seconds 1
     }
-    Remove-Job $waitJob
 
-    # Device is back, but boot may not be complete yet
+    # Poll for boot completion (reconnect if IP)
     while ($true) {
         $elapsed = [int]((Get-Date) - $waitStart).TotalSeconds
         if ($elapsed -gt $MaxWait) {
             Stop-Timer
-            Stop-WithError "Timed out after ${MaxWait}s waiting for boot."
+            Stop-WithError "Timed out after ${MaxWait}s. Try reconnecting manually."
+        }
+
+        if (Test-IpConnection) {
+            & adb connect $env:ANDROID_SERIAL 2>$null | Out-Null
+            Start-Sleep -Seconds 2
         }
 
         $bootComplete = & adb shell "getprop sys.boot_completed" 2>$null
         if ($bootComplete -match "1") {
-            try { & adb root 2>$null | Out-Null } catch {}
-            & adb wait-for-device 2>$null | Out-Null
+            Invoke-AdbRootWait
             break
         }
 
         Start-Sleep -Seconds 3
     }
+}
+
+# =========================================================================
+# Configuration
+# =========================================================================
+$IfitPackages = @(
+    "com.ifit.eru"
+    "com.ifit.standalone"
+    "com.ifit.launcher"
+    "com.ifit.arda"
+    "com.ifit.glassos_service"
+    "com.ifit.gandalf"
+    "com.ifit.rivendell"
+    "com.ifit.mithlond"
+)
+
+function Apply-Config {
+    $applied = 0
+
+    if ($script:CfgImmersive -eq 1) {
+        & adb shell "settings put global policy_control null" 2>$null | Out-Null
+        Write-Ok "Immersive mode disabled"
+        $applied++
+    }
+
+    if ($applied -eq 0) { Write-Info "No configuration changes to apply" }
 }
 
 # =========================================================================
@@ -251,16 +446,46 @@ if (-not $hyperboreaApk) {
     Stop-WithError "No Hyperborea*.apk found in apps\. Place the APK there and try again."
 }
 
-# Collect other APKs
-$otherApks = @(Get-ChildItem -Path $AppsDir -Filter "*.apk" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $hyperboreaApk.FullName })
+# BLE overlay is pushed to /vendor/overlay/ separately
+$overlayApk = Join-Path $AppsDir "BluetoothPeripheralOverlay.apk"
+
+# Collect other APKs (excluding Hyperborea and overlay)
+$otherApks = @(Get-ChildItem -Path $AppsDir -Filter "*.apk" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -ne $hyperboreaApk.FullName -and $_.FullName -ne $overlayApk })
 
 Write-Ok "Found $($hyperboreaApk.Name)"
-if ($otherApks.Count -gt 0) {
-    Write-Ok "$($otherApks.Count) additional APK(s) to install"
+
+# Build wizard sections
+$script:WizSections = @("Device settings")
+$script:WizLabels = @("Disable immersive mode")
+$script:WizStates = @(1)
+$script:WizSecStart = @(0)
+$script:WizSecCount = @(1)
+
+if (Test-Path $overlayApk) {
+    $script:WizLabels += "Enable Bluetooth advertising"
+    $script:WizStates += 1
+    $script:WizSecCount[0]++
 }
 
+if ($otherApks.Count -gt 0) {
+    $script:WizSections += "Additional apps"
+    $script:WizSecStart += $script:WizLabels.Count
+    $appCount = 0
+    foreach ($apk in $otherApks) {
+        $script:WizLabels += [System.IO.Path]::GetFileNameWithoutExtension($apk.Name)
+        $script:WizStates += 1
+        $appCount++
+    }
+    $script:WizSecCount += $appCount
+}
+
+$script:WizSections += "Done"
+$script:WizSecStart += $script:WizLabels.Count
+$script:WizSecCount += 0
+
 # =========================================================================
-# Step 2: Connect to device
+# Step 1: Connect to device
 # =========================================================================
 Find-Device
 
@@ -269,75 +494,140 @@ if ($whoami -ne "root") { Stop-WithError "Failed to get root (got: $whoami)" }
 Write-Ok "Root access confirmed"
 
 # =========================================================================
+# Step 2: Configure
+# =========================================================================
+Write-Step 2 "Configure"
+
+Write-Host ""
+Select-WizardConfig
+[Console]::Write("$([char]27)[J")
+Write-Ok "Configuration saved"
+
+# Extract results
+$script:CfgImmersive = $script:WizStates[0]
+$next = 1
+$script:CfgOverlay = 0
+if (Test-Path $overlayApk) {
+    $script:CfgOverlay = $script:WizStates[$next]
+    $next++
+}
+$appsStateStart = $next
+$appInstallStates = @()
+for ($i = 0; $i -lt $otherApks.Count; $i++) {
+    $appInstallStates += $script:WizStates[$appsStateStart + $i]
+}
+
+# =========================================================================
 # Step 3: Install Hyperborea as priv-app
 # =========================================================================
-Write-Step 2 "Install Hyperborea as system app"
+Write-Step 3 "Install Hyperborea"
 
-Write-Info "Remounting /system read-write..."
+Write-Info "Preparing device..."
 & adb shell "mount -o rw,remount /system" 2>$null | Out-Null
-Write-Ok "System partition mounted read-write"
+Write-Ok "Device ready"
 
-Write-Info "Pushing APK to /system/priv-app/Hyperborea/..."
+Write-Info "Installing..."
 & adb shell "mkdir -p /system/priv-app/Hyperborea" 2>$null | Out-Null
 & adb push $hyperboreaApk.FullName /system/priv-app/Hyperborea/Hyperborea.apk 2>$null | Out-Null
-Write-Ok "APK pushed"
-
-Write-Info "Setting permissions..."
 & adb shell "chmod 755 /system/priv-app/Hyperborea && chmod 644 /system/priv-app/Hyperborea/Hyperborea.apk" 2>$null | Out-Null
-Write-Ok "Permissions set (755/644)"
+Write-Ok "Installed"
 
-Write-Info "Remounting /system read-only..."
+if ((Test-Path $overlayApk) -and $script:CfgOverlay -eq 1) {
+    Write-Info "Applying Bluetooth configuration..."
+    & adb shell "mkdir -p /vendor/overlay" 2>$null | Out-Null
+    & adb push $overlayApk /vendor/overlay/BluetoothPeripheralOverlay.apk 2>$null | Out-Null
+    & adb shell "chmod 644 /vendor/overlay/BluetoothPeripheralOverlay.apk" 2>$null | Out-Null
+    Write-Ok "Bluetooth advertising enabled"
+}
+
+Write-Info "Finalizing..."
 & adb shell "mount -o ro,remount /system" 2>$null | Out-Null
-Write-Ok "System partition mounted read-only"
+$null = & adb shell "[ -f /data/update.zip ] || touch /data/update.zip; toybox chattr +i /data/update.zip" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "Some protections could not be applied"
+}
+& adb shell "touch /sdcard/.wolfDev" 2>$null | Out-Null
+Write-Ok "Done"
 
 # =========================================================================
 # Step 4: Reboot and wait
 # =========================================================================
-Write-Step 3 "Reboot device"
+Write-Step 4 "Reboot device"
 
-Write-Info "Rebooting (PackageManager scans /system/priv-app/ at boot)..."
+Write-Info "Rebooting..."
 $rebootStart = Get-Date
-& adb reboot 2>$null | Out-Null
-
 Start-Timer "Waiting for device..."
+& adb reboot 2>$null | Out-Null
 Wait-ForReboot -MaxWait 300
 Stop-Timer
 Write-Ok "Device ready ($(Format-Elapsed ([int]((Get-Date) - $rebootStart).TotalSeconds)))"
 
 # =========================================================================
-# Step 5: Install additional apps
+# Step 5: Disable iFit
 # =========================================================================
-Write-Step 4 "Install additional apps"
+Write-Step 5 "Disable iFit"
 
-if ($otherApks.Count -eq 0) {
-    Write-Info "No additional APKs to install"
-} else {
-    $installed = 0; $failed = 0
-    foreach ($apk in $otherApks) {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($apk.Name)
-        Write-Info "Installing $name..."
-        $result = & adb install -r $apk.FullName 2>&1
-        if ($result -match "Success") {
-            Write-Ok $name
-            $installed++
+$disabled = 0
+$installedPkgs = & adb shell "pm list packages" 2>$null
+foreach ($pkg in $IfitPackages) {
+    if ($installedPkgs -match [regex]::Escape($pkg)) {
+        $null = & adb shell "pm disable-user --user 0 $pkg" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Disabled $pkg"
+            $disabled++
         } else {
-            Write-Fail $name
-            $failed++
+            Write-Warn "Could not disable $pkg"
         }
-    }
-
-    Write-Host ""
-    if ($failed -eq 0) {
-        Write-Ok "All $installed app(s) installed"
-    } else {
-        Write-Warn "$installed installed, $failed failed"
     }
 }
 
+if ($disabled -eq 0) {
+    Write-Info "No iFit packages found to disable"
+} else {
+    Write-Ok "$disabled iFit package(s) disabled"
+}
+
 # =========================================================================
-# Step 6: Verify
+# Step 6: Install additional apps
 # =========================================================================
-Write-Step 5 "Verify"
+Write-Step 6 "Install additional apps"
+
+$installed = 0; $failed = 0; $skipped = 0
+for ($i = 0; $i -lt $otherApks.Count; $i++) {
+    if ($appInstallStates[$i] -ne 1) {
+        $skipped++
+        continue
+    }
+    $apk = $otherApks[$i]
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($apk.Name)
+    Write-Info "Installing $name..."
+    $result = & adb install -r $apk.FullName 2>&1
+    if ($result -match "Success") {
+        Write-Ok $name
+        $installed++
+    } else {
+        Write-Fail $name
+        $failed++
+    }
+}
+
+if ($installed -eq 0 -and $failed -eq 0) {
+    Write-Info "No additional apps to install"
+} elseif ($failed -eq 0) {
+    Write-Host ""
+    Write-Ok "All $installed app(s) installed"
+} else {
+    Write-Host ""
+    Write-Warn "$installed installed, $failed failed"
+}
+
+# =========================================================================
+# Step 7: Configure and verify
+# =========================================================================
+Write-Step 7 "Configure and verify"
+
+Apply-Config
+Write-Host ""
 
 $verify = (& adb shell @"
     echo PATH=`$(pm path com.nettarion.hyperborea 2>/dev/null)
@@ -357,20 +647,20 @@ $pass = 0; $total = 0
 $pkgPath = Get-Val "PATH"
 $total++
 if ($pkgPath -match "/system/priv-app/") {
-    Write-Ok "Install path: $pkgPath"
+    Write-Ok "Install location OK"
     $pass++
 } else {
-    Write-Fail "Install path: expected /system/priv-app/, got '$pkgPath'"
+    Write-Fail "Install location incorrect"
 }
 
 # Check PRIVILEGED flag
 $pkgPrivFlags = Get-Val "PRIVFLAGS"
 $total++
 if ($pkgPrivFlags -match "PRIVILEGED") {
-    Write-Ok "Privileged: yes"
+    Write-Ok "Permissions OK"
     $pass++
 } else {
-    Write-Fail "Privileged: not set (privateFlags='$pkgPrivFlags')"
+    Write-Fail "Permissions not granted"
 }
 
 Write-Host ""

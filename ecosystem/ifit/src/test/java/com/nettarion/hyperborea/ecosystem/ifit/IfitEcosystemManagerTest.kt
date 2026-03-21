@@ -23,8 +23,57 @@ class IfitEcosystemManagerTest {
     // --- Prerequisites ---
 
     @Test
-    fun `has two prerequisites`() {
-        assertThat(manager.prerequisites).hasSize(2)
+    fun `has three prerequisites`() {
+        assertThat(manager.prerequisites).hasSize(3)
+    }
+
+    // --- glassos-service-stopped ---
+
+    private fun glassosPrereq() = manager.prerequisites.first { it.id == "glassos-service-stopped" }
+
+    @Test
+    fun `glassos prerequisite is met when no glassos components`() {
+        val snapshot = buildSystemSnapshot(components = emptyList())
+        assertThat(glassosPrereq().isMet(snapshot)).isTrue()
+    }
+
+    @Test
+    fun `glassos prerequisite is NOT met when glassos is RUNNING`() {
+        val snapshot = buildSystemSnapshot(
+            components = listOf(buildGlassosComponent(ComponentState.RUNNING)),
+        )
+        assertThat(glassosPrereq().isMet(snapshot)).isFalse()
+    }
+
+    @Test
+    fun `glassos prerequisite is met when glassos is DISABLED`() {
+        val snapshot = buildSystemSnapshot(
+            components = listOf(buildGlassosComponent(ComponentState.DISABLED)),
+        )
+        assertThat(glassosPrereq().isMet(snapshot)).isTrue()
+    }
+
+    @Test
+    fun `glassos fulfill calls forceStopPackage with correct package`() = runTest {
+        var capturedPackage: String? = null
+        val controller = stubController(onForceStop = { pkg -> capturedPackage = pkg; true })
+        glassosPrereq().fulfill!!.invoke(controller)
+        assertThat(capturedPackage).isEqualTo("com.ifit.glassos_service")
+    }
+
+    @Test
+    fun `glassos fulfill returns Success when forceStopPackage succeeds`() = runTest {
+        val controller = stubController(onForceStop = { true })
+        val result = glassosPrereq().fulfill!!.invoke(controller)
+        assertThat(result).isEqualTo(FulfillResult.Success)
+    }
+
+    @Test
+    fun `glassos fulfill returns Failed when forceStopPackage fails`() = runTest {
+        val controller = stubController(onForceStop = { false })
+        val result = glassosPrereq().fulfill!!.invoke(controller)
+        assertThat(result).isInstanceOf(FulfillResult.Failed::class.java)
+        assertThat((result as FulfillResult.Failed).reason).contains("com.ifit.glassos_service")
     }
 
     // --- ifit-standalone-stopped ---
@@ -160,6 +209,13 @@ class IfitEcosystemManagerTest {
     }
 
     // --- Helpers ---
+
+    private fun buildGlassosComponent(state: ComponentState) = DeclaredComponent(
+        packageName = "com.ifit.glassos_service",
+        className = "com.ifit.glassos_service.GlassOSService",
+        type = ComponentType.SERVICE,
+        state = state,
+    )
 
     private fun buildIfitComponent(state: ComponentState) = DeclaredComponent(
         packageName = "com.ifit.standalone",

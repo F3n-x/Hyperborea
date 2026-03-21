@@ -105,6 +105,135 @@ choose_option() {
     CHOSEN=$cursor
 }
 
+# Wizard-style multi-step configuration.
+# Uses global arrays: WIZ_SECTIONS, WIZ_LABELS, WIZ_STATES, WIZ_SEC_START, WIZ_SEC_COUNT
+run_wizard() {
+    local num_sections=${#WIZ_SECTIONS[@]}
+    local current_step=0
+
+    while [ "$current_step" -lt "$num_sections" ]; do
+        local sec_start=${WIZ_SEC_START[$current_step]}
+        local sec_count=${WIZ_SEC_COUNT[$current_step]}
+        local is_done=0
+        [ "${WIZ_SECTIONS[$current_step]}" = "Done" ] && is_done=1
+        local cursor=0
+
+        # Build summary lines for Done step
+        local summary_lines=()
+        if [ "$is_done" -eq 1 ]; then
+            for ((s=0; s<num_sections-1; s++)); do
+                summary_lines+=("${BOLD}${WIZ_SECTIONS[$s]}${NC}")
+                local ss=${WIZ_SEC_START[$s]}
+                local sc=${WIZ_SEC_COUNT[$s]}
+                for ((j=0; j<sc; j++)); do
+                    local idx=$((ss + j))
+                    if [ "${WIZ_STATES[$idx]}" -eq 1 ]; then
+                        summary_lines+=("  ${GREEN}✓${NC} ${WIZ_LABELS[$idx]}")
+                    else
+                        summary_lines+=("  ${DIM}✗ ${WIZ_LABELS[$idx]}${NC}")
+                    fi
+                done
+            done
+        fi
+
+        # content = items + blank line + action button
+        local content_lines=$((sec_count + 2))
+        [ "$is_done" -eq 1 ] && content_lines=$((${#summary_lines[@]} + 2))
+        local total_lines=$((4 + content_lines))
+
+        _wiz_tab_bar() {
+            local bar="  ←"
+            for ((s=0; s<num_sections; s++)); do
+                if [ "$s" -lt "$current_step" ]; then
+                    bar+="  ${GREEN}✓${NC} ${WIZ_SECTIONS[$s]}"
+                elif [ "$s" -eq "$current_step" ]; then
+                    bar+="  ${CYAN}●${NC} ${BOLD}${WIZ_SECTIONS[$s]}${NC}"
+                else
+                    bar+="  ${DIM}○ ${WIZ_SECTIONS[$s]}${NC}"
+                fi
+            done
+            bar+="  →"
+            printf "\033[2K%b\n" "$bar"
+        }
+
+        _wiz_content() {
+            if [ "$is_done" -eq 1 ]; then
+                for ((i=0; i<${#summary_lines[@]}; i++)); do
+                    printf "\033[2K    %b\n" "${summary_lines[$i]}"
+                done
+            else
+                for ((i=0; i<sec_count; i++)); do
+                    local idx=$((sec_start + i))
+                    local arrow="  "
+                    [ "$i" -eq "$cursor" ] && arrow="${CYAN}›${NC} "
+                    if [ "${WIZ_STATES[$idx]}" -eq 1 ]; then
+                        printf "\033[2K    %b ${GREEN}✓${NC} %s\n" "$arrow" "${WIZ_LABELS[$idx]}"
+                    else
+                        printf "\033[2K    %b ${DIM}✗ %s${NC}\n" "$arrow" "${WIZ_LABELS[$idx]}"
+                    fi
+                done
+            fi
+            echo ""
+            local btn_label="Continue →"
+            [ "$is_done" -eq 1 ] && btn_label="Confirm"
+            local arrow="  "
+            [ "$cursor" -eq "$sec_count" ] && arrow="${CYAN}›${NC} "
+            printf "\033[2K    %b ${BOLD}%s${NC}\n" "$arrow" "$btn_label"
+        }
+
+        _wiz_draw() {
+            _wiz_tab_bar
+            echo ""
+            local hint="↑↓ navigate  •  Space toggle  •  Enter continue  •  Esc cancel"
+            [ "$is_done" -eq 1 ] && hint="Enter confirm  •  Esc cancel"
+            printf "\033[2K    ${DIM}%s${NC}\n" "$hint"
+            echo ""
+            _wiz_content
+            printf "\033[J"
+        }
+
+        _wiz_draw
+
+        while true; do
+            IFS= read -rsn1 key
+            case "$key" in
+                $'\x1b')
+                    _read_esc_seq
+                    if [ -z "$_seq" ]; then echo ""; exit 0; fi
+                    case "$_seq" in
+                        '[A') [ "$cursor" -gt 0 ] && cursor=$((cursor - 1)) ;;
+                        '[B') [ "$cursor" -lt "$sec_count" ] && cursor=$((cursor + 1)) ;;
+                    esac
+                    ;;
+                ' ')
+                    if [ "$cursor" -eq "$sec_count" ]; then
+                        break
+                    elif [ "$sec_count" -gt 0 ]; then
+                        local idx=$((sec_start + cursor))
+                        if [ "${WIZ_STATES[$idx]}" -eq 1 ]; then
+                            WIZ_STATES[$idx]=0
+                        else
+                            WIZ_STATES[$idx]=1
+                        fi
+                    fi
+                    ;;
+                '') break ;;
+            esac
+            if [ "$content_lines" -gt 0 ]; then
+                printf "\033[${content_lines}A"
+                _wiz_content
+            fi
+        done
+
+        # Clear wizard area and reposition for next step
+        printf "\033[${total_lines}A"
+        for ((l=0; l<total_lines; l++)); do printf "\033[2K\n"; done
+        printf "\033[${total_lines}A"
+
+        current_step=$((current_step + 1))
+    done
+}
+
 # =========================================================================
 # Timer (background spinner with elapsed time)
 # =========================================================================
@@ -247,7 +376,22 @@ wait_for_reboot() {
     done
 }
 
-TOTAL_STEPS=5
+TOTAL_STEPS=7
+
+# =========================================================================
+# Configuration options
+# =========================================================================
+apply_config() {
+    local applied=0
+
+    if [ "${CFG_IMMERSIVE}" -eq 1 ]; then
+        adb shell "settings put global policy_control null" >/dev/null 2>&1
+        ok "Immersive mode disabled"
+        applied=$((applied + 1))
+    fi
+
+    [ "$applied" -eq 0 ] && info "No configuration changes to apply"
+}
 
 # =========================================================================
 # Step 1: Pre-flight
@@ -264,8 +408,19 @@ for f in "$APPS_DIR"/Hyperborea*.apk; do
 done
 [ -n "$HYPERBOREA_APK" ] || die "No Hyperborea*.apk found in apps/. Place the APK there and try again."
 
-# BLE overlay is pushed to /vendor/overlay/ separately — exclude from adb install
+# BLE overlay is pushed to /vendor/overlay/ separately
 OVERLAY_APK="$APPS_DIR/BluetoothPeripheralOverlay.apk"
+# iFit packages to disable after deployment
+IFIT_PACKAGES=(
+    com.ifit.eru
+    com.ifit.standalone
+    com.ifit.launcher
+    com.ifit.arda
+    com.ifit.glassos_service
+    com.ifit.gandalf
+    com.ifit.rivendell
+    com.ifit.mithlond
+)
 
 # Collect other APKs
 OTHER_APKS=()
@@ -277,9 +432,35 @@ for f in "$APPS_DIR"/*.apk; do
 done
 
 ok "Found $(basename "$HYPERBOREA_APK")"
-if [ ${#OTHER_APKS[@]} -gt 0 ]; then
-    ok "${#OTHER_APKS[@]} additional APK(s) to install"
+
+# Build wizard sections
+WIZ_SECTIONS=("Device settings")
+WIZ_LABELS=("Disable immersive mode")
+WIZ_STATES=(1)
+WIZ_SEC_START=(0)
+WIZ_SEC_COUNT=(1)
+
+if [ -f "$OVERLAY_APK" ]; then
+    WIZ_LABELS+=("Enable Bluetooth advertising")
+    WIZ_STATES+=(1)
+    WIZ_SEC_COUNT[0]=$((WIZ_SEC_COUNT[0] + 1))
 fi
+
+if [ ${#OTHER_APKS[@]} -gt 0 ]; then
+    WIZ_SECTIONS+=("Additional apps")
+    WIZ_SEC_START+=(${#WIZ_LABELS[@]})
+    APP_COUNT=0
+    for APK in "${OTHER_APKS[@]}"; do
+        WIZ_LABELS+=("$(basename "$APK" .apk)")
+        WIZ_STATES+=(1)
+        APP_COUNT=$((APP_COUNT + 1))
+    done
+    WIZ_SEC_COUNT+=($APP_COUNT)
+fi
+
+WIZ_SECTIONS+=("Done")
+WIZ_SEC_START+=(${#WIZ_LABELS[@]})
+WIZ_SEC_COUNT+=(0)
 
 # =========================================================================
 # Step 2: Connect to device
@@ -291,9 +472,33 @@ WHOAMI=$(adb shell "whoami" 2>/dev/null | tr -d '\r')
 ok "Root access confirmed"
 
 # =========================================================================
+# Step 2: Configure
+# =========================================================================
+step 2 "Configure"
+
+echo ""
+run_wizard
+printf "\033[J"
+ok "Configuration saved"
+
+# Extract results
+CFG_IMMERSIVE=${WIZ_STATES[0]}
+_next=1
+CFG_OVERLAY=0
+if [ -f "$OVERLAY_APK" ]; then
+    CFG_OVERLAY=${WIZ_STATES[$_next]}
+    _next=$((_next + 1))
+fi
+APPS_STATE_START=$_next
+APP_INSTALL_STATES=()
+for ((i=0; i<${#OTHER_APKS[@]}; i++)); do
+    APP_INSTALL_STATES+=("${WIZ_STATES[$((APPS_STATE_START + i))]}")
+done
+
+# =========================================================================
 # Step 3: Install Hyperborea as priv-app
 # =========================================================================
-step 2 "Install Hyperborea"
+step 3 "Install Hyperborea"
 
 info "Preparing device..."
 adb shell "mount -o rw,remount /system" >/dev/null 2>&1 || true
@@ -305,12 +510,12 @@ adb push "$HYPERBOREA_APK" /system/priv-app/Hyperborea/Hyperborea.apk >/dev/null
 adb shell "chmod 755 /system/priv-app/Hyperborea && chmod 644 /system/priv-app/Hyperborea/Hyperborea.apk" >/dev/null 2>&1
 ok "Installed"
 
-if [ -f "$OVERLAY_APK" ]; then
-    info "Applying configuration..."
+if [ -f "$OVERLAY_APK" ] && [ "${CFG_OVERLAY}" -eq 1 ]; then
+    info "Applying Bluetooth configuration..."
     adb shell "mkdir -p /vendor/overlay" >/dev/null 2>&1
     adb push "$OVERLAY_APK" /vendor/overlay/BluetoothPeripheralOverlay.apk >/dev/null 2>&1
     adb shell "chmod 644 /vendor/overlay/BluetoothPeripheralOverlay.apk" >/dev/null 2>&1
-    ok "Configuration applied"
+    ok "Bluetooth advertising enabled"
 fi
 
 info "Finalizing..."
@@ -326,7 +531,7 @@ ok "Done"
 # =========================================================================
 # Step 4: Reboot and wait
 # =========================================================================
-step 3 "Reboot device"
+step 4 "Reboot device"
 
 info "Rebooting..."
 REBOOT_START=$(date +%s)
@@ -337,39 +542,67 @@ stop_timer
 ok "Device ready ($(fmt_time $(( $(date +%s) - REBOOT_START ))))"
 
 # =========================================================================
-# Step 5: Install other APKs
+# Step 5: Disable iFit
 # =========================================================================
-step 4 "Install additional apps"
+step 5 "Disable iFit"
 
-if [ ${#OTHER_APKS[@]} -eq 0 ]; then
-    info "No additional APKs to install"
-else
-    INSTALLED=0
-    FAILED=0
-    for APK in "${OTHER_APKS[@]}"; do
-        NAME=$(basename "$APK" .apk)
-        info "Installing $NAME..."
-        if adb install -r "$APK" 2>&1 | grep -q "Success"; then
-            ok "$NAME"
-            INSTALLED=$((INSTALLED + 1))
-        else
-            fail "$NAME"
-            FAILED=$((FAILED + 1))
-        fi
-    done
-
-    echo ""
-    if [ "$FAILED" -eq 0 ]; then
-        ok "All $INSTALLED app(s) installed"
-    else
-        warn "$INSTALLED installed, $FAILED failed"
+DISABLED=0
+for pkg in "${IFIT_PACKAGES[@]}"; do
+    if adb shell "pm list packages" 2>/dev/null | grep -q "$pkg"; then
+        adb shell "pm disable-user --user 0 $pkg" >/dev/null 2>&1 && \
+            ok "Disabled $pkg" && DISABLED=$((DISABLED + 1)) || \
+            warn "Could not disable $pkg"
     fi
+done
+
+if [ "$DISABLED" -eq 0 ]; then
+    info "No iFit packages found to disable"
+else
+    ok "$DISABLED iFit package(s) disabled"
 fi
 
 # =========================================================================
-# Step 6: Verify
+# Step 6: Install other APKs
 # =========================================================================
-step 5 "Verify"
+step 6 "Install additional apps"
+
+INSTALLED=0
+FAILED=0
+SKIPPED=0
+for ((i=0; i<${#OTHER_APKS[@]}; i++)); do
+    if [ "${APP_INSTALL_STATES[$i]}" -ne 1 ]; then
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
+    APK="${OTHER_APKS[$i]}"
+    NAME=$(basename "$APK" .apk)
+    info "Installing $NAME..."
+    if adb install -r "$APK" 2>&1 | grep -q "Success"; then
+        ok "$NAME"
+        INSTALLED=$((INSTALLED + 1))
+    else
+        fail "$NAME"
+        FAILED=$((FAILED + 1))
+    fi
+done
+
+if [ "$INSTALLED" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
+    info "No additional apps to install"
+elif [ "$FAILED" -eq 0 ]; then
+    echo ""
+    ok "All $INSTALLED app(s) installed"
+else
+    echo ""
+    warn "$INSTALLED installed, $FAILED failed"
+fi
+
+# =========================================================================
+# Step 7: Configure and verify
+# =========================================================================
+step 7 "Configure and verify"
+
+apply_config
+echo ""
 
 VERIFY=$(adb shell "
     echo PATH=\$(pm path com.nettarion.hyperborea 2>/dev/null)

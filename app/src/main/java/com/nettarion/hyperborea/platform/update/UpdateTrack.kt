@@ -46,6 +46,7 @@ class UpdateTrack internal constructor(
             return
         }
         val info = current.info
+        _state.value = TrackState.Downloading(info, DownloadProgress(0, 0))
         activeJob = scope.launch {
             try {
                 val resolvedUrl = resolveUrl(info)
@@ -55,7 +56,6 @@ class UpdateTrack internal constructor(
                     _state.value = TrackState.Error(msg)
                     return@launch
                 }
-                _state.value = TrackState.Downloading(info, DownloadProgress(0, 0))
                 logger.i(TAG, "$name: Starting download from $resolvedUrl")
 
                 val dir = File(downloadDir)
@@ -112,9 +112,9 @@ class UpdateTrack internal constructor(
         }
         val info = current.info
         val path = current.path
+        _state.value = TrackState.Installing(info)
         activeJob = scope.launch {
             try {
-                _state.value = TrackState.Installing(info)
                 logger.i(TAG, "$name: Installing from $path")
 
                 when (val result = installer.install(path)) {

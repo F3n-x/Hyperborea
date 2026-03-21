@@ -40,6 +40,11 @@ fun signingConfigFingerprint(config: com.android.build.api.dsl.ApkSigningConfig)
     return digest.joinToString("") { "%02X".format(it) }
 }
 
+val versionNameProp = findProperty("appVersionName") as String
+val versionParts = versionNameProp.split(".").map { it.toInt() }
+require(versionParts.size == 3) { "appVersionName must be MAJOR.MINOR.PATCH, got: $versionNameProp" }
+val (major, minor, patch) = versionParts
+
 android {
     namespace = "com.nettarion.hyperborea"
     compileSdk = 36
@@ -48,13 +53,17 @@ android {
         applicationId = "com.nettarion.hyperborea"
         minSdk = 25
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = major * 10000 + minor * 100 + patch
+        versionName = versionNameProp
 
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
         buildConfigField("String", "LICENSE_PUBLIC_KEY", "\"$licensePublicKey\"")
         buildConfigField("String", "R2_BASE_URL", "\"$r2BaseUrl\"")
         buildConfigField("String", "SIGNING_CERTIFICATE_SHA256", "\"\"")
+
+        val gitHash = providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+            .standardOutput.asText.get().trim()
+        buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
     }
 
     signingConfigs {
@@ -170,4 +179,26 @@ dependencies {
 
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
+}
+
+tasks.register("prepareRelease") {
+    dependsOn("assembleSystemRelease")
+    doLast {
+        val apk = file("build/outputs/apk/system/release/app-system-release.apk")
+        val dest = rootProject.file("release/Hyperborea/apps/Hyperborea.apk")
+        apk.copyTo(dest, overwrite = true)
+        val sha256 = MessageDigest.getInstance("SHA-256")
+            .digest(dest.readBytes())
+            .joinToString("") { byte -> "%02x".format(byte) }
+        val vc = android.defaultConfig.versionCode
+        val vn = android.defaultConfig.versionName
+        println("\nRelease prepared: $vn ($vc)")
+        println("  APK: ${dest.relativeTo(rootProject.projectDir)}")
+        println("  Size: ${dest.length() / 1024} KB")
+        println("  SHA-256: $sha256")
+        println("\nServer manifest values:")
+        println("  \"versionCode\": $vc,")
+        println("  \"versionName\": \"$vn\",")
+        println("  \"sha256\": \"$sha256\"")
+    }
 }
