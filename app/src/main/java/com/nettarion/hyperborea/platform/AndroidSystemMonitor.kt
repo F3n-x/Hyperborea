@@ -13,6 +13,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.ProviderInfo
 import android.hardware.usb.UsbManager
+import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import android.provider.Settings
 import com.nettarion.hyperborea.core.AppLogger
@@ -52,6 +53,7 @@ class AndroidSystemMonitor @Inject constructor(
     init {
         val filter = IntentFilter().apply {
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(ConnectivityManager.CONNECTIVITY_ACTION)
             addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -103,6 +105,10 @@ class AndroidSystemMonitor @Inject constructor(
             (btAdapter.isMultipleAdvertisementSupported ||
                 btAdapter.bluetoothLeAdvertiser != null)
 
+        val connectivityManager =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val networkConnected = connectivityManager?.activeNetworkInfo?.isConnected == true
+
         // WiFi + IP
         val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val wifiEnabled = pm.hasSystemFeature(PackageManager.FEATURE_WIFI) &&
@@ -122,6 +128,20 @@ class AndroidSystemMonitor @Inject constructor(
             false
         }
 
+        // Immersive mode
+        val immersiveModeEnabled = try {
+            Settings.Global.getString(context.contentResolver, "policy_control") == "immersive.full=*"
+        } catch (_: Exception) {
+            false
+        }
+
+        // User setup complete (privileged mode)
+        val userSetupComplete = try {
+            Settings.Secure.getInt(context.contentResolver, "user_setup_complete", 0) == 1
+        } catch (_: Exception) {
+            false
+        }
+
         // Root
         val rootAvailable = checkRootAvailable()
 
@@ -131,12 +151,15 @@ class AndroidSystemMonitor @Inject constructor(
         return SystemStatus(
             isBluetoothLeEnabled = bleEnabled,
             isBluetoothLeAdvertisingSupported = bleAdvertisingSupported,
+            isNetworkConnected = networkConnected,
             isWifiEnabled = wifiEnabled,
             wifiIpAddress = wifiIp,
             isUsbHostAvailable = usbHost,
             isAdbEnabled = adbEnabled,
             isRootAvailable = rootAvailable,
             isSeLinuxEnforcing = seLinuxEnforcing,
+            isImmersiveModeEnabled = immersiveModeEnabled,
+            isUserSetupComplete = userSetupComplete,
         )
     }
 
@@ -299,12 +322,15 @@ class AndroidSystemMonitor @Inject constructor(
             status = SystemStatus(
                 isBluetoothLeEnabled = false,
                 isBluetoothLeAdvertisingSupported = false,
+                isNetworkConnected = false,
                 isWifiEnabled = false,
                 wifiIpAddress = null,
                 isUsbHostAvailable = false,
                 isAdbEnabled = false,
                 isRootAvailable = false,
                 isSeLinuxEnforcing = false,
+                isImmersiveModeEnabled = false,
+                isUserSetupComplete = false,
             ),
             packages = emptyList(),
             components = emptyList(),

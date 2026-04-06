@@ -20,6 +20,7 @@ import com.nettarion.hyperborea.core.LogEntry
 import com.nettarion.hyperborea.core.LogStore
 import com.nettarion.hyperborea.core.system.SystemLogEntry
 import com.nettarion.hyperborea.core.system.SystemLogStore
+import com.nettarion.hyperborea.core.system.SystemController
 import com.nettarion.hyperborea.core.system.SystemMonitor
 import com.nettarion.hyperborea.core.system.SystemSnapshot
 import com.nettarion.hyperborea.core.profile.UserPreferences
@@ -53,6 +54,7 @@ class AdminViewModel @Inject constructor(
     private val broadcastAdapters: Set<@JvmSuppressWildcards BroadcastAdapter>,
     private val updateManager: UpdateManager,
     private val userPreferences: UserPreferences,
+    private val systemController: SystemController,
     private val supportHttpClient: SupportHttpClient,
     private val licenseChecker: LicenseChecker,
     private val logger: AppLogger,
@@ -87,6 +89,14 @@ class AdminViewModel @Inject constructor(
     val enabledBroadcasts: StateFlow<Set<BroadcastId>> = userPreferences.enabledBroadcasts
     val overlayEnabled: StateFlow<Boolean> = userPreferences.overlayEnabled
     val fanMode: StateFlow<FanMode> = userPreferences.fanMode
+    val immersiveModeEnabled: StateFlow<Boolean> = userPreferences.immersiveModeEnabled
+
+    fun toggleImmersiveMode(enabled: Boolean) {
+        userPreferences.setImmersiveModeEnabled(enabled)
+        viewModelScope.launch {
+            systemController.setImmersiveMode(enabled)
+        }
+    }
 
     private val _exportResult = MutableStateFlow<ExportResult?>(null)
     val exportResult: StateFlow<ExportResult?> = _exportResult.asStateFlow()

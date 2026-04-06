@@ -29,6 +29,9 @@ class ProfileUserPreferences(
     private val _fanMode = MutableStateFlow(loadFanMode())
     override val fanMode: StateFlow<FanMode> = _fanMode
 
+    private val _immersiveModeEnabled = MutableStateFlow(prefs.getBoolean(KEY_IMMERSIVE_MODE, true))
+    override val immersiveModeEnabled: StateFlow<Boolean> = _immersiveModeEnabled
+
     override fun setBroadcastEnabled(id: BroadcastId, enabled: Boolean) {
         val current = _enabledBroadcasts.value.toMutableSet()
         if (enabled) current.add(id) else current.remove(id)
@@ -58,6 +61,12 @@ class ProfileUserPreferences(
         logger.i(TAG, "Fan mode set to ${mode.name}")
     }
 
+    override fun setImmersiveModeEnabled(enabled: Boolean) {
+        _immersiveModeEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_IMMERSIVE_MODE, enabled).apply()
+        logger.i(TAG, "Immersive mode ${if (enabled) "enabled" else "disabled"}")
+    }
+
     private fun loadEnabledBroadcasts(): Set<BroadcastId> {
         val stored = prefs.getStringSet(KEY_ENABLED_BROADCASTS, null) ?: return BroadcastId.entries.toSet()
         return stored.mapNotNull { name ->
@@ -76,5 +85,6 @@ class ProfileUserPreferences(
         const val KEY_OVERLAY_ENABLED = "overlay_enabled"
         const val KEY_SENSOR_ADDRESS = "saved_sensor_address"
         const val KEY_FAN_MODE = "fan_mode"
+        const val KEY_IMMERSIVE_MODE = "immersive_mode_enabled"
     }
 }

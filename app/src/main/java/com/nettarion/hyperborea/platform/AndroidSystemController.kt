@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.provider.Settings
 import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.system.SystemController
 import kotlinx.coroutines.Dispatchers
@@ -124,6 +125,43 @@ class AndroidSystemController @Inject constructor(
         logger.d(TAG, "revokeUsbPermissions: $packageName (delegating to forceStopPackage)")
         return forceStopPackage(packageName)
     }
+
+    override suspend fun setImmersiveMode(enabled: Boolean): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val value = if (enabled) "immersive.full=*" else null
+                Settings.Global.putString(context.contentResolver, "policy_control", value)
+                logger.i(TAG, "Immersive mode ${if (enabled) "enabled" else "disabled"}")
+                true
+            } catch (e: Exception) {
+                logger.e(TAG, "setImmersiveMode failed: ${e.message}", e)
+                false
+            }
+        }
+
+    override suspend fun setAdbEnabled(enabled: Boolean): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                Settings.Global.putInt(context.contentResolver, "adb_enabled", if (enabled) 1 else 0)
+                logger.i(TAG, "ADB ${if (enabled) "enabled" else "disabled"}")
+                true
+            } catch (e: Exception) {
+                logger.e(TAG, "setAdbEnabled failed: ${e.message}", e)
+                false
+            }
+        }
+
+    override suspend fun setUserSetupComplete(complete: Boolean): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                Settings.Secure.putInt(context.contentResolver, "user_setup_complete", if (complete) 1 else 0)
+                logger.i(TAG, "user_setup_complete set to $complete")
+                true
+            } catch (e: Exception) {
+                logger.e(TAG, "setUserSetupComplete failed: ${e.message}", e)
+                false
+            }
+        }
 
     private suspend fun executeShellCommand(command: String): ShellResult =
         withContext(Dispatchers.IO) {

@@ -28,14 +28,15 @@ import com.nettarion.hyperborea.ui.theme.LocalHyperboreaColors
 fun UnlicensedScreen(
     licenseState: LicenseState,
     hasNetwork: Boolean,
+    pairingError: String?,
     onLinkDevice: () -> Unit,
 ) {
     val colors = LocalHyperboreaColors.current
     var loading by remember { mutableStateOf(false) }
 
     // Reset loading when license state returns to Unlicensed (e.g. after a network error)
-    LaunchedEffect(licenseState) {
-        if (licenseState is LicenseState.Unlicensed) {
+    LaunchedEffect(licenseState, pairingError) {
+        if (licenseState is LicenseState.Unlicensed || pairingError != null) {
             loading = false
         }
     }
@@ -62,11 +63,20 @@ fun UnlicensedScreen(
                 text = if (hasNetwork) {
                     "Link this device to your Hyperborea account to get started."
                 } else {
-                    "No network connection. Waiting for WiFi..."
+                    "No network connection. Waiting for network..."
                 },
                 style = MaterialTheme.typography.bodyLarge,
                 color = if (hasNetwork) colors.textMedium else colors.textLow,
             )
+
+            if (pairingError != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = pairingError,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             Spacer(modifier = Modifier.height(32.dp))
 

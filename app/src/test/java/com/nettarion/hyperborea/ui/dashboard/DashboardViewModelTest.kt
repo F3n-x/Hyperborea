@@ -100,6 +100,8 @@ class DashboardViewModelTest {
         override fun setOverlayEnabled(enabled: Boolean) {}
         override fun setSavedSensorAddress(address: String?) {}
         override fun setFanMode(mode: com.nettarion.hyperborea.core.model.FanMode) {}
+        override val immersiveModeEnabled: StateFlow<Boolean> = MutableStateFlow(true)
+        override fun setImmersiveModeEnabled(enabled: Boolean) {}
     }
 
     private val fakeSensorAdapter = object : SensorAdapter {
@@ -159,6 +161,9 @@ class DashboardViewModelTest {
             override suspend fun enableComponent(packageName: String, className: String) = true
             override suspend fun grantUsbPermission(packageName: String) = true
             override suspend fun revokeUsbPermissions(packageName: String) = true
+            override suspend fun setImmersiveMode(enabled: Boolean) = true
+            override suspend fun setAdbEnabled(enabled: Boolean) = true
+            override suspend fun setUserSetupComplete(complete: Boolean) = true
         }
 
         val fakeEcosystemManager = object : EcosystemManager {

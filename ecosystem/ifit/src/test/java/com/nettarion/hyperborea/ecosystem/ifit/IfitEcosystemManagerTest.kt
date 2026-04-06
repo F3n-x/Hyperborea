@@ -4,9 +4,14 @@ import com.google.common.truth.Truth.assertThat
 import com.nettarion.hyperborea.core.system.ComponentState
 import com.nettarion.hyperborea.core.system.ComponentType
 import com.nettarion.hyperborea.core.system.DeclaredComponent
+import com.nettarion.hyperborea.core.adapter.BroadcastId
+import com.nettarion.hyperborea.core.model.FanMode
 import com.nettarion.hyperborea.core.orchestration.FulfillResult
+import com.nettarion.hyperborea.core.profile.UserPreferences
 import com.nettarion.hyperborea.core.system.SystemController
 import com.nettarion.hyperborea.core.test.buildSystemSnapshot
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
@@ -14,17 +19,37 @@ import org.junit.Test
 class IfitEcosystemManagerTest {
 
     private lateinit var manager: IfitEcosystemManager
+    private lateinit var privilegedManager: IfitEcosystemManager
+    private lateinit var fakePrefs: FakeUserPreferences
 
     @Before
     fun setUp() {
-        manager = IfitEcosystemManager()
+        fakePrefs = FakeUserPreferences()
+        manager = IfitEcosystemManager(fakePrefs, hasSecureSettingsAccess = false)
+        privilegedManager = IfitEcosystemManager(fakePrefs, hasSecureSettingsAccess = true)
     }
 
     // --- Prerequisites ---
 
     @Test
-    fun `has three prerequisites`() {
-        assertThat(manager.prerequisites).hasSize(3)
+    fun `non privileged install skips secure settings prerequisites`() {
+        assertThat(manager.prerequisites.map { it.id }).containsExactly(
+            "ifit-standalone-stopped",
+            "glassos-service-stopped",
+            "eru-usb-receiver-disabled",
+        )
+    }
+
+    @Test
+    fun `privileged install includes secure settings prerequisites`() {
+        assertThat(privilegedManager.prerequisites.map { it.id }).containsExactly(
+            "ifit-standalone-stopped",
+            "glassos-service-stopped",
+            "eru-usb-receiver-disabled",
+            "immersive-mode-enforced",
+            "adb-enabled",
+            "user-setup-complete",
+        )
     }
 
     // --- glassos-service-stopped ---
@@ -231,9 +256,145 @@ class IfitEcosystemManagerTest {
         state = state,
     )
 
+    // --- immersive-mode-enforced ---
+
+    private fun immersivePrereq() = privilegedManager.prerequisites.first { it.id == "immersive-mode-enforced" }
+
+    @Test
+    fun `immersive prerequisite is met when system matches preference (both true)`() {
+        fakePrefs.setImmersiveModePref(true)
+        val snapshot = buildSystemSnapshot(isImmersiveModeEnabled = true)
+        assertThat(immersivePrereq().isMet(snapshot)).isTrue()
+    }
+
+    @Test
+    fun `immersive prerequisite is met when system matches preference (both false)`() {
+        fakePrefs.setImmersiveModePref(false)
+        val snapshot = buildSystemSnapshot(isImmersiveModeEnabled = false)
+        assertThat(immersivePrereq().isMet(snapshot)).isTrue()
+    }
+
+    @Test
+    fun `immersive prerequisite is NOT met when system on but preference off`() {
+        fakePrefs.setImmersiveModePref(false)
+        val snapshot = buildSystemSnapshot(isImmersiveModeEnabled = true)
+        assertThat(immersivePrereq().isMet(snapshot)).isFalse()
+    }
+
+    @Test
+    fun `immersive prerequisite is NOT met when system off but preference on`() {
+        fakePrefs.setImmersiveModePref(true)
+        val snapshot = buildSystemSnapshot(isImmersiveModeEnabled = false)
+        assertThat(immersivePrereq().isMet(snapshot)).isFalse()
+    }
+
+    @Test
+    fun `immersive fulfill reads current preference value`() = runTest {
+        fakePrefs.setImmersiveModePref(false)
+        var capturedEnabled: Boolean? = null
+        val controller = stubController(onSetImmersiveMode = { capturedEnabled = it; true })
+        immersivePrereq().fulfill!!.invoke(controller)
+        assertThat(capturedEnabled).isFalse()
+    }
+
+    @Test
+    fun `immersive fulfill returns Success when setImmersiveMode succeeds`() = runTest {
+        val controller = stubController(onSetImmersiveMode = { true })
+        val result = immersivePrereq().fulfill!!.invoke(controller)
+        assertThat(result).isEqualTo(FulfillResult.Success)
+    }
+
+    @Test
+    fun `immersive fulfill returns Failed when setImmersiveMode fails`() = runTest {
+        val controller = stubController(onSetImmersiveMode = { false })
+        val result = immersivePrereq().fulfill!!.invoke(controller)
+        assertThat(result).isInstanceOf(FulfillResult.Failed::class.java)
+    }
+
+    // --- adb-enabled ---
+
+    private fun adbPrereq() = privilegedManager.prerequisites.first { it.id == "adb-enabled" }
+
+    @Test
+    fun `adb prerequisite is met when ADB enabled`() {
+        val snapshot = buildSystemSnapshot(isAdbEnabled = true)
+        assertThat(adbPrereq().isMet(snapshot)).isTrue()
+    }
+
+    @Test
+    fun `adb prerequisite is NOT met when ADB disabled`() {
+        val snapshot = buildSystemSnapshot(isAdbEnabled = false)
+        assertThat(adbPrereq().isMet(snapshot)).isFalse()
+    }
+
+    @Test
+    fun `adb fulfill calls setAdbEnabled with true`() = runTest {
+        var capturedEnabled: Boolean? = null
+        val controller = stubController(onSetAdbEnabled = { capturedEnabled = it; true })
+        adbPrereq().fulfill!!.invoke(controller)
+        assertThat(capturedEnabled).isTrue()
+    }
+
+    @Test
+    fun `adb fulfill returns Success when setAdbEnabled succeeds`() = runTest {
+        val controller = stubController(onSetAdbEnabled = { true })
+        val result = adbPrereq().fulfill!!.invoke(controller)
+        assertThat(result).isEqualTo(FulfillResult.Success)
+    }
+
+    @Test
+    fun `adb fulfill returns Failed when setAdbEnabled fails`() = runTest {
+        val controller = stubController(onSetAdbEnabled = { false })
+        val result = adbPrereq().fulfill!!.invoke(controller)
+        assertThat(result).isInstanceOf(FulfillResult.Failed::class.java)
+    }
+
+    // --- user-setup-complete ---
+
+    private fun setupCompletePrereq() = privilegedManager.prerequisites.first { it.id == "user-setup-complete" }
+
+    @Test
+    fun `setup complete prerequisite is met when user_setup_complete is 1`() {
+        val snapshot = buildSystemSnapshot(isUserSetupComplete = true)
+        assertThat(setupCompletePrereq().isMet(snapshot)).isTrue()
+    }
+
+    @Test
+    fun `setup complete prerequisite is NOT met when user_setup_complete is 0`() {
+        val snapshot = buildSystemSnapshot(isUserSetupComplete = false)
+        assertThat(setupCompletePrereq().isMet(snapshot)).isFalse()
+    }
+
+    @Test
+    fun `setup complete fulfill calls setUserSetupComplete with true`() = runTest {
+        var capturedComplete: Boolean? = null
+        val controller = stubController(onSetUserSetupComplete = { capturedComplete = it; true })
+        setupCompletePrereq().fulfill!!.invoke(controller)
+        assertThat(capturedComplete).isTrue()
+    }
+
+    @Test
+    fun `setup complete fulfill returns Success when setUserSetupComplete succeeds`() = runTest {
+        val controller = stubController(onSetUserSetupComplete = { true })
+        val result = setupCompletePrereq().fulfill!!.invoke(controller)
+        assertThat(result).isEqualTo(FulfillResult.Success)
+    }
+
+    @Test
+    fun `setup complete fulfill returns Failed when setUserSetupComplete fails`() = runTest {
+        val controller = stubController(onSetUserSetupComplete = { false })
+        val result = setupCompletePrereq().fulfill!!.invoke(controller)
+        assertThat(result).isInstanceOf(FulfillResult.Failed::class.java)
+    }
+
+    // --- Helpers ---
+
     private fun stubController(
         onForceStop: suspend (String) -> Boolean = { false },
         onDisableComponent: suspend (String, String) -> Boolean = { _, _ -> false },
+        onSetImmersiveMode: suspend (Boolean) -> Boolean = { false },
+        onSetAdbEnabled: suspend (Boolean) -> Boolean = { false },
+        onSetUserSetupComplete: suspend (Boolean) -> Boolean = { false },
     ) = object : SystemController {
         override suspend fun stopService(packageName: String, className: String) = false
         override suspend fun forceStopPackage(packageName: String) = onForceStop(packageName)
@@ -244,5 +405,23 @@ class IfitEcosystemManagerTest {
         override suspend fun enableComponent(packageName: String, className: String) = false
         override suspend fun grantUsbPermission(packageName: String) = false
         override suspend fun revokeUsbPermissions(packageName: String) = false
+        override suspend fun setImmersiveMode(enabled: Boolean) = onSetImmersiveMode(enabled)
+        override suspend fun setAdbEnabled(enabled: Boolean) = onSetAdbEnabled(enabled)
+        override suspend fun setUserSetupComplete(complete: Boolean) = onSetUserSetupComplete(complete)
     }
+}
+
+private class FakeUserPreferences : UserPreferences {
+    private val _immersiveModeEnabled = MutableStateFlow(true)
+    override val immersiveModeEnabled: StateFlow<Boolean> = _immersiveModeEnabled
+    override val enabledBroadcasts: StateFlow<Set<BroadcastId>> = MutableStateFlow(emptySet())
+    override val overlayEnabled: StateFlow<Boolean> = MutableStateFlow(false)
+    override val savedSensorAddress: StateFlow<String?> = MutableStateFlow(null)
+    override val fanMode: StateFlow<FanMode> = MutableStateFlow(FanMode.OFF)
+    override fun setBroadcastEnabled(id: BroadcastId, enabled: Boolean) {}
+    override fun setOverlayEnabled(enabled: Boolean) {}
+    override fun setSavedSensorAddress(address: String?) {}
+    override fun setFanMode(mode: FanMode) {}
+    override fun setImmersiveModeEnabled(enabled: Boolean) { _immersiveModeEnabled.value = enabled }
+    fun setImmersiveModePref(enabled: Boolean) { _immersiveModeEnabled.value = enabled }
 }

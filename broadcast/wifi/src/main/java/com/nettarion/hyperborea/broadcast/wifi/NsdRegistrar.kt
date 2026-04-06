@@ -3,6 +3,7 @@ package com.nettarion.hyperborea.broadcast.wifi
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.provider.Settings
 import com.nettarion.hyperborea.core.AppLogger
 import java.net.NetworkInterface
 
@@ -79,9 +80,12 @@ class NsdRegistrar(
         } catch (e: Exception) {
             logger.w(TAG, "Failed to read wlan0 MAC: ${e.message}")
         }
-        // Fallback: deterministic from android.os.Build.SERIAL
-        val serial = android.os.Build.SERIAL ?: "unknown"
-        val hash = serial.hashCode()
+        // Fallback: deterministic from ANDROID_ID to avoid deprecated serial APIs.
+        val androidId = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.ANDROID_ID,
+        ).orEmpty().ifBlank { "unknown" }
+        val hash = androidId.hashCode()
         return byteArrayOf(
             0x02, // locally administered bit set
             ((hash shr 24) and 0xFF).toByte(),

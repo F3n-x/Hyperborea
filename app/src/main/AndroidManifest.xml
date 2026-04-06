@@ -10,6 +10,7 @@
 
     <!-- WiFi broadcast -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- External storage for log export (auto-granted on API 25) -->
@@ -36,6 +37,12 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission
         android:name="android.permission.CHANGE_COMPONENT_ENABLED_STATE"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
     <!-- App self-update (granted automatically as privileged app in /system/priv-app/) -->

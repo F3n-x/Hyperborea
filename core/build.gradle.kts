@@ -1,6 +1,11 @@
 plugins {
+    alias(libs.plugins.android.lint)
     alias(libs.plugins.kotlin.jvm)
     `java-test-fixtures`
+}
+
+lint {
+    checkDependencies = true
 }
 
 dependencies {

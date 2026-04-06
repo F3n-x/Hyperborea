@@ -1,6 +1,79 @@
+import org.gradle.api.tasks.bundling.Zip
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.MapProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Properties
+
+abstract class StageReleaseBundleTask : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourceApk: RegularFileProperty
+
+    @get:OutputFile
+    abstract val releaseApk: RegularFileProperty
+
+    @get:Input
+    abstract val requiredProperties: MapProperty<String, String>
+
+    @TaskAction
+    fun stageReleaseBundle() {
+        val missing = requiredProperties.get().filterValues { it.isBlank() }.keys
+        require(missing.isEmpty()) { "Missing required keys in local.properties: ${missing.joinToString()}" }
+
+        val source = sourceApk.get().asFile
+        val destination = releaseApk.get().asFile
+        destination.parentFile.mkdirs()
+        source.copyTo(destination, overwrite = true)
+    }
+}
+
+abstract class ReportReleaseTask : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val releaseApk: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val releaseZip: RegularFileProperty
+
+    @get:Input
+    abstract val rootDirPath: Property<String>
+
+    @get:Input
+    abstract val versionCodeInput: Property<Int>
+
+    @get:Input
+    abstract val versionNameInput: Property<String>
+
+    @TaskAction
+    fun reportRelease() {
+        val rootDir = File(rootDirPath.get())
+        val apk = releaseApk.get().asFile
+        val zip = releaseZip.get().asFile
+        val sha256 = MessageDigest.getInstance("SHA-256")
+            .digest(apk.readBytes())
+            .joinToString("") { byte -> "%02x".format(byte) }
+
+        println("\nRelease prepared: ${versionNameInput.get()} (${versionCodeInput.get()})")
+        println("  APK: ${apk.relativeTo(rootDir)} (${apk.length() / 1024} KB)")
+        println("  ZIP: ${zip.relativeTo(rootDir)} (${zip.length() / 1024} KB)")
+        println("  SHA-256: $sha256")
+        println("\nServer manifest values:")
+        println("  \"versionCode\": ${versionCodeInput.get()},")
+        println("  \"versionName\": \"${versionNameInput.get()}\",")
+        println("  \"sha256\": \"$sha256\"")
+    }
+}
 
 plugins {
     alias(libs.plugins.android.application)
@@ -61,7 +134,7 @@ android {
 
     defaultConfig {
         applicationId = "com.nettarion.hyperborea"
-        minSdk = 25
+        minSdk = 22
         targetSdk = 36
         versionCode = major * 10000 + minor * 100 + patch
         versionName = versionNameProp
@@ -137,6 +210,13 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        jniLibs {
+            // androidx.graphics.path ships a prebuilt native library AGP cannot strip.
+            keepDebugSymbols += "**/libandroidx.graphics.path.so"
+        }
+    }
+
     lint {
         // Ensure lint never analyzes stale intermediates by treating warnings as errors
         // and always checking dependencies across all modules.
@@ -191,24 +271,58 @@ dependencies {
     debugImplementation(libs.compose.ui.test.manifest)
 }
 
-tasks.register("prepareRelease") {
-    dependsOn("assembleSystemRelease")
-    doLast {
-        val apk = file("build/outputs/apk/system/release/app-system-release.apk")
-        val dest = rootProject.file("release/Hyperborea/apps/Hyperborea.apk")
-        apk.copyTo(dest, overwrite = true)
-        val sha256 = MessageDigest.getInstance("SHA-256")
-            .digest(dest.readBytes())
-            .joinToString("") { byte -> "%02x".format(byte) }
-        val vc = android.defaultConfig.versionCode
-        val vn = android.defaultConfig.versionName
-        println("\nRelease prepared: $vn ($vc)")
-        println("  APK: ${dest.relativeTo(rootProject.projectDir)}")
-        println("  Size: ${dest.length() / 1024} KB")
-        println("  SHA-256: $sha256")
-        println("\nServer manifest values:")
-        println("  \"versionCode\": $vc,")
-        println("  \"versionName\": \"$vn\",")
-        println("  \"sha256\": \"$sha256\"")
+// Ensure prepareRelease runs tasks in the right order
+tasks.configureEach {
+    if (name != "clean") mustRunAfter("clean")
+    if (name == "test" || name.startsWith("test")) mustRunAfter("lint")
+    if (name.contains("assemble", ignoreCase = true)) mustRunAfter("test")
+}
+
+val vc = android.defaultConfig.versionCode
+val vn = android.defaultConfig.versionName
+val releaseDir = rootProject.layout.projectDirectory.dir("release/Hyperborea")
+val stagedReleaseApk = releaseDir.file("apps/Hyperborea.apk")
+val packagedReleaseZip = rootProject.layout.projectDirectory.file("release/Hyperborea-v$vn.zip")
+val requiredKeys = listOf(
+    "server.url",
+    "license.public.key",
+    "r2.base.url",
+    "release.keystore.password",
+    "release.key.password"
+)
+val capturedProps = requiredKeys.associateWith { localProperties.getProperty(it).orEmpty() }
+
+val stageReleaseBundle = tasks.register<StageReleaseBundleTask>("stageReleaseBundle") {
+    dependsOn("assembleStandardRelease")
+    sourceApk.set(layout.buildDirectory.file("outputs/apk/standard/release/app-standard-release.apk"))
+    releaseApk.set(stagedReleaseApk)
+    requiredProperties.set(capturedProps)
+}
+
+val packageReleaseZip = tasks.register<Zip>("packageReleaseZip") {
+    dependsOn(stageReleaseBundle)
+
+    archiveFileName.set(packagedReleaseZip.asFile.name)
+    destinationDirectory.set(packagedReleaseZip.asFile.parentFile)
+    includeEmptyDirs = false
+    dirPermissions { unix("755") }
+
+    from(releaseDir) {
+        exclude(".DS_Store", "**/.DS_Store")
+
+        eachFile {
+            permissions {
+                unix(if (relativeSourcePath.pathString == "deploy.sh") "755" else "644")
+            }
+        }
     }
+}
+
+tasks.register<ReportReleaseTask>("prepareRelease") {
+    dependsOn("clean", "lint", "test", packageReleaseZip)
+    releaseApk.set(stagedReleaseApk)
+    releaseZip.set(packagedReleaseZip)
+    rootDirPath.set(rootProject.projectDir.absolutePath)
+    versionCodeInput.set(vc)
+    versionNameInput.set(vn)
 }

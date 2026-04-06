@@ -49,12 +49,15 @@ class LicenseViewModelTest {
             status = SystemStatus(
                 isBluetoothLeEnabled = false,
                 isBluetoothLeAdvertisingSupported = false,
+                isNetworkConnected = false,
                 isWifiEnabled = false,
                 wifiIpAddress = null,
                 isUsbHostAvailable = false,
                 isAdbEnabled = false,
                 isRootAvailable = false,
                 isSeLinuxEnforcing = false,
+                isImmersiveModeEnabled = false,
+                isUserSetupComplete = false,
             ),
             packages = emptyList(),
             components = emptyList(),
@@ -158,28 +161,44 @@ class LicenseViewModelTest {
     }
 
     @Test
+    fun `requestPairing exposes error on failure`() = runViewModelTest {
+        pairingResult = PairingSession.Error("TLS handshake failed")
+        createViewModel()
+        runCurrent()
+
+        viewModel.requestPairing()
+        runCurrent()
+
+        assertThat(viewModel.pairingError.value).isEqualTo("TLS handshake failed")
+    }
+
+    @Test
     fun `cancelPairing calls check`() = runViewModelTest {
         createViewModel()
         runCurrent()
         checkCallCount = 0
+        pairingResult = PairingSession.Error("stub")
+        viewModel.requestPairing()
+        runCurrent()
 
         viewModel.cancelPairing()
         runCurrent()
 
         assertThat(checkCallCount).isEqualTo(1)
         assertThat(lastCheckSilent).isFalse()
+        assertThat(viewModel.pairingError.value).isNull()
     }
 
     @Test
-    fun `retries check silently when wifi appears while unlicensed`() = runViewModelTest {
+    fun `retries check silently when network appears while unlicensed`() = runViewModelTest {
         createViewModel()
         runCurrent()
         licenseState.value = LicenseState.Unlicensed
         checkCallCount = 0
 
-        // Simulate WiFi becoming available
+        // Simulate network becoming available
         systemSnapshot.value = systemSnapshot.value.copy(
-            status = systemSnapshot.value.status.copy(wifiIpAddress = "192.168.1.100")
+            status = systemSnapshot.value.status.copy(isNetworkConnected = true)
         )
         runCurrent()
 
@@ -188,14 +207,14 @@ class LicenseViewModelTest {
     }
 
     @Test
-    fun `does not retry when wifi appears while licensed`() = runViewModelTest {
+    fun `does not retry when network appears while licensed`() = runViewModelTest {
         createViewModel()
         runCurrent()
         licenseState.value = LicenseState.Licensed
         checkCallCount = 0
 
         systemSnapshot.value = systemSnapshot.value.copy(
-            status = systemSnapshot.value.status.copy(wifiIpAddress = "192.168.1.100")
+            status = systemSnapshot.value.status.copy(isNetworkConnected = true)
         )
         runCurrent()
 
@@ -203,7 +222,7 @@ class LicenseViewModelTest {
     }
 
     @Test
-    fun `hasNetwork reflects wifi ip state`() = runViewModelTest {
+    fun `hasNetwork reflects network connectivity state`() = runViewModelTest {
         createViewModel()
         runCurrent()
 
@@ -211,7 +230,7 @@ class LicenseViewModelTest {
             assertThat(awaitItem()).isFalse()
 
             systemSnapshot.value = systemSnapshot.value.copy(
-                status = systemSnapshot.value.status.copy(wifiIpAddress = "192.168.1.100")
+                status = systemSnapshot.value.status.copy(isNetworkConnected = true)
             )
             assertThat(awaitItem()).isTrue()
         }

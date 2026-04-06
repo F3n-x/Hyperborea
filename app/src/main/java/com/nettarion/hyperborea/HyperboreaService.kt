@@ -211,12 +211,12 @@ class HyperboreaService : Service() {
             .setOngoing(true)
             .addAction(
                 Notification.Action.Builder(
-                    null, "Overlay", overlayPendingIntent,
+                    android.R.drawable.ic_menu_view, "Overlay", overlayPendingIntent,
                 ).build(),
             )
             .addAction(
                 Notification.Action.Builder(
-                    null, "Stop", stopPendingIntent,
+                    android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent,
                 ).build(),
             )
             .build()

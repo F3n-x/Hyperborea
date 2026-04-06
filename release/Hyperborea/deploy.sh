@@ -382,15 +382,7 @@ TOTAL_STEPS=7
 # Configuration options
 # =========================================================================
 apply_config() {
-    local applied=0
-
-    if [ "${CFG_IMMERSIVE}" -eq 1 ]; then
-        adb shell "settings put global policy_control null" >/dev/null 2>&1
-        ok "Immersive mode disabled"
-        applied=$((applied + 1))
-    fi
-
-    [ "$applied" -eq 0 ] && info "No configuration changes to apply"
+    info "Device settings managed by Hyperborea at startup"
 }
 
 # =========================================================================
@@ -435,10 +427,10 @@ ok "Found $(basename "$HYPERBOREA_APK")"
 
 # Build wizard sections
 WIZ_SECTIONS=("Device settings")
-WIZ_LABELS=("Disable immersive mode")
-WIZ_STATES=(1)
+WIZ_LABELS=()
+WIZ_STATES=()
 WIZ_SEC_START=(0)
-WIZ_SEC_COUNT=(1)
+WIZ_SEC_COUNT=(0)
 
 if [ -f "$OVERLAY_APK" ]; then
     WIZ_LABELS+=("Enable Bluetooth advertising")
@@ -482,8 +474,7 @@ printf "\033[J"
 ok "Configuration saved"
 
 # Extract results
-CFG_IMMERSIVE=${WIZ_STATES[0]}
-_next=1
+_next=0
 CFG_OVERLAY=0
 if [ -f "$OVERLAY_APK" ]; then
     CFG_OVERLAY=${WIZ_STATES[$_next]}
@@ -644,3 +635,8 @@ fi
 echo ""
 echo -e "  ${GREEN}${BOLD}Deployment complete!${NC}"
 echo ""
+
+# Launch Hyperborea
+info "Launching Hyperborea..."
+adb shell am start -n com.nettarion.hyperborea/.MainActivity >/dev/null 2>&1
+ok "Hyperborea started"

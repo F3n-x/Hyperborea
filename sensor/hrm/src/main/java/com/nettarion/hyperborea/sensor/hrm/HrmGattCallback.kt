@@ -57,6 +57,7 @@ internal class HrmGattCallback(
         }
     }
 
+    @Deprecated("Uses the legacy callback signature required on API 25.")
     @Suppress("DEPRECATION")
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         if (characteristic.uuid != HR_MEASUREMENT_UUID) return
