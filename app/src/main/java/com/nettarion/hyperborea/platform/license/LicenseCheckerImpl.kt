@@ -24,7 +24,7 @@ import javax.inject.Singleton
 
 @Singleton
 class LicenseCheckerImpl @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val prefs: SharedPreferences,
     private val logger: AppLogger,
     private val httpClient: LicenseHttpClient,
@@ -89,7 +89,7 @@ class LicenseCheckerImpl @Inject constructor(
             if (active) {
                 _state.value = LicenseState.Licensed
                 logger.i(TAG, "Licensed")
-                val timezone: String? = response.optString("timezone", null)
+                val timezone = response.optString("timezone").takeIf { it.isNotEmpty() }
                 if (timezone != null) applyTimezone(timezone)
             } else {
                 _state.value = LicenseState.Unlicensed

@@ -117,7 +117,8 @@ class LogExporter @Inject constructor(
     }
 
     private fun logsDir(): File {
-        val dir = File(context.getExternalFilesDir(null), "logs")
+        val baseDir = context.getExternalFilesDir(null) ?: context.filesDir
+        val dir = File(baseDir, "logs")
         dir.mkdirs()
         return dir
     }

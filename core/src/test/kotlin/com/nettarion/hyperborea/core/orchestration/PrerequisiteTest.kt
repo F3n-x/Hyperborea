@@ -110,5 +110,8 @@ class PrerequisiteTest {
         override suspend fun enableComponent(packageName: String, className: String) = defaultReturn
         override suspend fun grantUsbPermission(packageName: String) = defaultReturn
         override suspend fun revokeUsbPermissions(packageName: String) = defaultReturn
+        override suspend fun setImmersiveMode(enabled: Boolean) = defaultReturn
+        override suspend fun setAdbEnabled(enabled: Boolean) = defaultReturn
+        override suspend fun setUserSetupComplete(complete: Boolean) = defaultReturn
     }
 }

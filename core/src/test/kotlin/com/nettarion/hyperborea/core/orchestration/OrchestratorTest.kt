@@ -659,6 +659,9 @@ class OrchestratorTest {
         override suspend fun enableComponent(packageName: String, className: String) = false
         override suspend fun grantUsbPermission(packageName: String) = false
         override suspend fun revokeUsbPermissions(packageName: String) = false
+        override suspend fun setImmersiveMode(enabled: Boolean) = false
+        override suspend fun setAdbEnabled(enabled: Boolean) = false
+        override suspend fun setUserSetupComplete(complete: Boolean) = false
     }
 
     private class FakeEcosystemManager(
@@ -727,6 +730,10 @@ class OrchestratorTest {
         }
         override fun setFanMode(mode: com.nettarion.hyperborea.core.model.FanMode) {
             fanMode.value = mode
+        }
+        override val immersiveModeEnabled = MutableStateFlow(true)
+        override fun setImmersiveModeEnabled(enabled: Boolean) {
+            immersiveModeEnabled.value = enabled
         }
     }
 

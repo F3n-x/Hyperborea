@@ -1,4 +1,4 @@
-# deploy.ps1 — Install Hyperborea as a privileged system app on a rooted NordicTrack console.
+# deploy.ps1 - Install Hyperborea as a privileged system app on a rooted NordicTrack console.
 #
 # Place Hyperborea*.apk (and any additional APKs) in apps\, then run:
 #   powershell -ExecutionPolicy Bypass -File deploy.ps1
@@ -11,12 +11,26 @@ $AppsDir = Join-Path $ScriptDir "apps"
 
 $TotalSteps = 7
 
-function Write-Ok($msg)      { Write-Host "  " -NoNewline; Write-Host "✓" -ForegroundColor Green -NoNewline; Write-Host " $msg" }
-function Write-Fail($msg)    { Write-Host "  " -NoNewline; Write-Host "✗" -ForegroundColor Red -NoNewline; Write-Host " $msg" }
-function Write-Info($msg)    { Write-Host "  " -NoNewline; Write-Host "→" -ForegroundColor Cyan -NoNewline; Write-Host " $msg" }
+function Write-Ok($msg)      { Write-Host "  " -NoNewline; Write-Host "+" -ForegroundColor Green -NoNewline; Write-Host " $msg" }
+function Write-Fail($msg)    { Write-Host "  " -NoNewline; Write-Host "x" -ForegroundColor Red -NoNewline; Write-Host " $msg" }
+function Write-Info($msg)    { Write-Host "  " -NoNewline; Write-Host ">" -ForegroundColor Cyan -NoNewline; Write-Host " $msg" }
 function Write-Warn($msg)    { Write-Host "  " -NoNewline; Write-Host "!" -ForegroundColor Yellow -NoNewline; Write-Host " $msg" }
 function Write-Step($n, $msg) { Write-Host "`n[$n/$TotalSteps] $msg" -ForegroundColor Cyan }
 function Stop-WithError($msg) { Write-Fail $msg; exit 1 }
+function Assert-LastExitCode($msg) {
+    if ($LASTEXITCODE -ne 0) { Stop-WithError $msg }
+}
+function Invoke-Adb {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
+
+    $previousPreference = $global:ErrorActionPreference
+    try {
+        $global:ErrorActionPreference = "Continue"
+        & adb @Arguments
+    } finally {
+        $global:ErrorActionPreference = $previousPreference
+    }
+}
 
 function Format-Elapsed([int]$seconds) {
     return "{0}:{1:d2}" -f [int][math]::Floor($seconds / 60), [int]($seconds % 60)
@@ -69,7 +83,7 @@ function Select-Choice {
         for ($i = 0; $i -lt $count; $i++) {
             Write-Host "    " -NoNewline
             if ($i -eq $cursor) {
-                Write-Host "› " -ForegroundColor Cyan -NoNewline
+                Write-Host "> " -ForegroundColor Cyan -NoNewline
             } else {
                 Write-Host "  " -NoNewline
             }
@@ -132,20 +146,20 @@ function Select-WizardConfig {
         function Draw-TabBar {
             [Console]::SetCursorPosition(0, $wizTop)
             Clear-Line
-            Write-Host "  ←" -NoNewline
+            Write-Host "  <-" -NoNewline
             for ($s = 0; $s -lt $numSections; $s++) {
                 Write-Host "  " -NoNewline
                 if ($s -lt $currentStep) {
-                    Write-Host "✓" -ForegroundColor Green -NoNewline
+                    Write-Host "+" -ForegroundColor Green -NoNewline
                     Write-Host " $($script:WizSections[$s])" -NoNewline
                 } elseif ($s -eq $currentStep) {
-                    Write-Host "●" -ForegroundColor Cyan -NoNewline
+                    Write-Host "*" -ForegroundColor Cyan -NoNewline
                     Write-Host " $($script:WizSections[$s])" -NoNewline
                 } else {
-                    Write-Host "○ $($script:WizSections[$s])" -ForegroundColor DarkGray -NoNewline
+                    Write-Host "o $($script:WizSections[$s])" -ForegroundColor DarkGray -NoNewline
                 }
             }
-            Write-Host "  →"
+            Write-Host "  ->"
         }
 
         function Draw-Content {
@@ -157,10 +171,10 @@ function Select-WizardConfig {
                         Write-Host "    $($item.Text)"
                     } elseif ($item.State -eq 1) {
                         Write-Host "      " -NoNewline
-                        Write-Host "✓" -ForegroundColor Green -NoNewline
+                        Write-Host "+" -ForegroundColor Green -NoNewline
                         Write-Host " $($item.Text)"
                     } else {
-                        Write-Host "      ✗ $($item.Text)" -ForegroundColor DarkGray
+                        Write-Host "      x $($item.Text)" -ForegroundColor DarkGray
                     }
                 }
             } else {
@@ -169,15 +183,15 @@ function Select-WizardConfig {
                     $idx = $secStart + $i
                     Write-Host "    " -NoNewline
                     if ($i -eq $cursor) {
-                        Write-Host "› " -ForegroundColor Cyan -NoNewline
+                        Write-Host "> " -ForegroundColor Cyan -NoNewline
                     } else {
                         Write-Host "  " -NoNewline
                     }
                     if ($script:WizStates[$idx] -eq 1) {
-                        Write-Host "✓" -ForegroundColor Green -NoNewline
+                        Write-Host "+" -ForegroundColor Green -NoNewline
                         Write-Host " $($script:WizLabels[$idx])"
                     } else {
-                        Write-Host "✗ $($script:WizLabels[$idx])" -ForegroundColor DarkGray
+                        Write-Host "x $($script:WizLabels[$idx])" -ForegroundColor DarkGray
                     }
                 }
             }
@@ -186,10 +200,10 @@ function Select-WizardConfig {
             Write-Host ""
             # Action button
             Clear-Line
-            $btnLabel = if ($isDone) { "Confirm" } else { "Continue →" }
+            $btnLabel = if ($isDone) { "Confirm" } else { "Continue ->" }
             Write-Host "    " -NoNewline
             if ($cursor -eq $secCount) {
-                Write-Host "› " -ForegroundColor Cyan -NoNewline
+                Write-Host "> " -ForegroundColor Cyan -NoNewline
             } else {
                 Write-Host "  " -NoNewline
             }
@@ -299,13 +313,13 @@ function Test-IpConnection {
 }
 
 function Invoke-AdbRootWait {
-    & adb root 2>$null | Out-Null
+    Invoke-Adb root 2>$null | Out-Null
     if (Test-IpConnection) {
         Start-Sleep -Seconds 2
-        & adb connect $env:ANDROID_SERIAL 2>$null | Out-Null
+        Invoke-Adb connect $env:ANDROID_SERIAL 2>$null | Out-Null
         Start-Sleep -Seconds 1
     }
-    & adb wait-for-device 2>$null | Out-Null
+    Invoke-Adb wait-for-device 2>$null | Out-Null
 }
 
 # =========================================================================
@@ -315,7 +329,7 @@ function Find-Device {
     while ($true) {
         Write-Step 1 "Connect to device"
 
-        $raw = & adb devices 2>$null
+        $raw = Invoke-Adb devices 2>$null
         $devices = @($raw | Where-Object { $_ -match '\s+device$' })
         $serials = @()
         foreach ($d in $devices) { $serials += ($d -split '\s+')[0] }
@@ -349,10 +363,10 @@ function Find-Device {
         if ($ip -notmatch ':') { $ip = "${ip}:5555" }
 
         Write-Info "Connecting to $ip..."
-        & adb connect $ip 2>$null | Out-Null
+        Invoke-Adb connect $ip 2>$null | Out-Null
         Start-Sleep -Seconds 2
 
-        & adb -s $ip shell true 2>$null | Out-Null
+        Invoke-Adb -s $ip shell true 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             $env:ANDROID_SERIAL = $ip
             Invoke-AdbRootWait
@@ -376,7 +390,7 @@ function Wait-ForReboot {
 
     # Wait for device to actually go offline
     while ($true) {
-        $null = & adb shell true 2>$null
+        $null = Invoke-Adb shell true 2>$null
         if ($LASTEXITCODE -ne 0) { break }
         Start-Sleep -Seconds 1
     }
@@ -390,11 +404,11 @@ function Wait-ForReboot {
         }
 
         if (Test-IpConnection) {
-            & adb connect $env:ANDROID_SERIAL 2>$null | Out-Null
+            Invoke-Adb connect $env:ANDROID_SERIAL 2>$null | Out-Null
             Start-Sleep -Seconds 2
         }
 
-        $bootComplete = & adb shell "getprop sys.boot_completed" 2>$null
+        $bootComplete = Invoke-Adb shell "getprop sys.boot_completed" 2>$null
         if ($bootComplete -match "1") {
             Invoke-AdbRootWait
             break
@@ -422,7 +436,8 @@ function Apply-Config {
     $applied = 0
 
     if ($script:CfgImmersive -eq 1) {
-        & adb shell "settings put global policy_control null" 2>$null | Out-Null
+        Invoke-Adb shell "settings put global policy_control null" 2>$null | Out-Null
+        Assert-LastExitCode "Failed to update immersive mode settings."
         Write-Ok "Immersive mode disabled"
         $applied++
     }
@@ -489,7 +504,7 @@ $script:WizSecCount += 0
 # =========================================================================
 Find-Device
 
-$whoami = (& adb shell "whoami" 2>$null) -replace "`r",""
+$whoami = (Invoke-Adb shell "whoami" 2>$null) -replace "`r",""
 if ($whoami -ne "root") { Stop-WithError "Failed to get root (got: $whoami)" }
 Write-Ok "Root access confirmed"
 
@@ -500,7 +515,7 @@ Write-Step 2 "Configure"
 
 Write-Host ""
 Select-WizardConfig
-[Console]::Write("$([char]27)[J")
+Clear-Host
 Write-Ok "Configuration saved"
 
 # Extract results
@@ -523,30 +538,38 @@ for ($i = 0; $i -lt $otherApks.Count; $i++) {
 Write-Step 3 "Install Hyperborea"
 
 Write-Info "Preparing device..."
-& adb shell "mount -o rw,remount /system" 2>$null | Out-Null
+Invoke-Adb shell "mount -o rw,remount /system" 2>$null | Out-Null
+Assert-LastExitCode "Failed to remount /system read-write."
 Write-Ok "Device ready"
 
 Write-Info "Installing..."
-& adb shell "mkdir -p /system/priv-app/Hyperborea" 2>$null | Out-Null
-& adb push $hyperboreaApk.FullName /system/priv-app/Hyperborea/Hyperborea.apk 2>$null | Out-Null
-& adb shell "chmod 755 /system/priv-app/Hyperborea && chmod 644 /system/priv-app/Hyperborea/Hyperborea.apk" 2>$null | Out-Null
+Invoke-Adb shell "mkdir -p /system/priv-app/Hyperborea" 2>$null | Out-Null
+Assert-LastExitCode "Failed to create /system/priv-app/Hyperborea."
+Invoke-Adb push $hyperboreaApk.FullName /system/priv-app/Hyperborea/Hyperborea.apk 2>$null | Out-Null
+Assert-LastExitCode "Failed to push Hyperborea.apk."
+Invoke-Adb shell "chmod 755 /system/priv-app/Hyperborea; chmod 644 /system/priv-app/Hyperborea/Hyperborea.apk" 2>$null | Out-Null
+Assert-LastExitCode "Failed to set Hyperborea.apk permissions."
 Write-Ok "Installed"
 
 if ((Test-Path $overlayApk) -and $script:CfgOverlay -eq 1) {
     Write-Info "Applying Bluetooth configuration..."
-    & adb shell "mkdir -p /vendor/overlay" 2>$null | Out-Null
-    & adb push $overlayApk /vendor/overlay/BluetoothPeripheralOverlay.apk 2>$null | Out-Null
-    & adb shell "chmod 644 /vendor/overlay/BluetoothPeripheralOverlay.apk" 2>$null | Out-Null
+    Invoke-Adb shell "mkdir -p /vendor/overlay" 2>$null | Out-Null
+    Assert-LastExitCode "Failed to create /vendor/overlay."
+    Invoke-Adb push $overlayApk /vendor/overlay/BluetoothPeripheralOverlay.apk 2>$null | Out-Null
+    Assert-LastExitCode "Failed to push BluetoothPeripheralOverlay.apk."
+    Invoke-Adb shell "chmod 644 /vendor/overlay/BluetoothPeripheralOverlay.apk" 2>$null | Out-Null
+    Assert-LastExitCode "Failed to set BluetoothPeripheralOverlay.apk permissions."
     Write-Ok "Bluetooth advertising enabled"
 }
 
 Write-Info "Finalizing..."
-& adb shell "mount -o ro,remount /system" 2>$null | Out-Null
-$null = & adb shell "[ -f /data/update.zip ] || touch /data/update.zip; toybox chattr +i /data/update.zip" 2>$null
+Invoke-Adb shell "mount -o ro,remount /system" 2>$null | Out-Null
+Assert-LastExitCode "Failed to remount /system read-only."
+$null = Invoke-Adb shell "if [ ! -f /data/update.zip ]; then touch /data/update.zip; fi; toybox chattr +i /data/update.zip" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Warn "Some protections could not be applied"
 }
-& adb shell "touch /sdcard/.wolfDev" 2>$null | Out-Null
+Invoke-Adb shell "touch /sdcard/.wolfDev" 2>$null | Out-Null
 Write-Ok "Done"
 
 # =========================================================================
@@ -557,7 +580,8 @@ Write-Step 4 "Reboot device"
 Write-Info "Rebooting..."
 $rebootStart = Get-Date
 Start-Timer "Waiting for device..."
-& adb reboot 2>$null | Out-Null
+Invoke-Adb reboot 2>$null | Out-Null
+Assert-LastExitCode "Failed to reboot the device."
 Wait-ForReboot -MaxWait 300
 Stop-Timer
 Write-Ok "Device ready ($(Format-Elapsed ([int]((Get-Date) - $rebootStart).TotalSeconds)))"
@@ -568,10 +592,10 @@ Write-Ok "Device ready ($(Format-Elapsed ([int]((Get-Date) - $rebootStart).Total
 Write-Step 5 "Disable iFit"
 
 $disabled = 0
-$installedPkgs = & adb shell "pm list packages" 2>$null
+$installedPkgs = Invoke-Adb shell "pm list packages" 2>$null
 foreach ($pkg in $IfitPackages) {
     if ($installedPkgs -match [regex]::Escape($pkg)) {
-        $null = & adb shell "pm disable-user --user 0 $pkg" 2>$null
+        $null = Invoke-Adb shell "pm disable-user --user 0 $pkg" 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Disabled $pkg"
             $disabled++
@@ -601,7 +625,7 @@ for ($i = 0; $i -lt $otherApks.Count; $i++) {
     $apk = $otherApks[$i]
     $name = [System.IO.Path]::GetFileNameWithoutExtension($apk.Name)
     Write-Info "Installing $name..."
-    $result = & adb install -r $apk.FullName 2>&1
+    $result = Invoke-Adb install -r $apk.FullName 2>&1
     if ($result -match "Success") {
         Write-Ok $name
         $installed++
@@ -629,11 +653,13 @@ Write-Step 7 "Configure and verify"
 Apply-Config
 Write-Host ""
 
-$verify = (& adb shell @"
-    echo PATH=`$(pm path com.nettarion.hyperborea 2>/dev/null)
-    echo FLAGS=`$(dumpsys package com.nettarion.hyperborea 2>/dev/null | grep 'pkgFlags=' | head -1)
-    echo PRIVFLAGS=`$(dumpsys package com.nettarion.hyperborea 2>/dev/null | grep 'privateFlags=' | head -1)
-"@ 2>$null) -replace "`r",""
+$verifyScript = @"
+echo PATH=`$(pm path com.nettarion.hyperborea 2>/dev/null)
+echo FLAGS=`$(dumpsys package com.nettarion.hyperborea 2>/dev/null | grep 'pkgFlags=' | head -1)
+echo PRIVFLAGS=`$(dumpsys package com.nettarion.hyperborea 2>/dev/null | grep 'privateFlags=' | head -1)
+"@
+
+$verify = (Invoke-Adb shell $verifyScript 2>$null) -replace "`r",""
 
 function Get-Val($key) {
     $line = ($verify -split "`n") | Where-Object { $_ -match "^$key=" } | Select-Object -First 1

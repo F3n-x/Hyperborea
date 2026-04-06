@@ -10,8 +10,10 @@ interface UserPreferences {
     val overlayEnabled: StateFlow<Boolean>
     val savedSensorAddress: StateFlow<String?>
     val fanMode: StateFlow<FanMode>
+    val immersiveModeEnabled: StateFlow<Boolean>
     fun setBroadcastEnabled(id: BroadcastId, enabled: Boolean)
     fun setOverlayEnabled(enabled: Boolean)
     fun setSavedSensorAddress(address: String?)
     fun setFanMode(mode: FanMode)
+    fun setImmersiveModeEnabled(enabled: Boolean)
 }

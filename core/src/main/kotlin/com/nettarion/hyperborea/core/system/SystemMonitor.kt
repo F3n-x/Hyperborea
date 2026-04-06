@@ -5,12 +5,15 @@ import kotlinx.coroutines.flow.StateFlow
 data class SystemStatus(
     val isBluetoothLeEnabled: Boolean,
     val isBluetoothLeAdvertisingSupported: Boolean,
+    val isNetworkConnected: Boolean,
     val isWifiEnabled: Boolean,
     val wifiIpAddress: String?,
     val isUsbHostAvailable: Boolean,
     val isAdbEnabled: Boolean,
     val isRootAvailable: Boolean,
     val isSeLinuxEnforcing: Boolean,
+    val isImmersiveModeEnabled: Boolean,
+    val isUserSetupComplete: Boolean,
 )
 
 data class UsbDeviceInfo(

@@ -12,4 +12,8 @@ interface SystemController {
 
     suspend fun grantUsbPermission(packageName: String): Boolean
     suspend fun revokeUsbPermissions(packageName: String): Boolean
+
+    suspend fun setImmersiveMode(enabled: Boolean): Boolean
+    suspend fun setAdbEnabled(enabled: Boolean): Boolean
+    suspend fun setUserSetupComplete(complete: Boolean): Boolean
 }

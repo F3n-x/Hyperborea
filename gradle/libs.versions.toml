@@ -1,6 +1,6 @@
 [versions]
 agp = "9.1.0"
-kotlin = "2.3.10"
+kotlin = "2.3.20"
 ksp = "2.3.6"
 coroutines = "1.10.2"
 junit = "4.13.2"
@@ -8,14 +8,14 @@ truth = "1.4.5"
 mockk = "1.14.9"
 turbine = "1.2.1"
 
-compose-bom = "2026.02.01"
-activity-compose = "1.12.4"
-lifecycle = "2.10.0"
+compose-bom = "2025.10.01"
+activity-compose = "1.11.0"
+lifecycle = "2.9.4"
 navigation = "2.9.7"
 hilt = "2.59.2"
-hilt-navigation-compose = "1.3.0"
-room = "2.8.4"
-bouncycastle = "1.78"
+hilt-navigation-compose = "1.2.0"
+room = "2.7.2"
+bouncycastle = "1.83"
 # No stable 1.1.0 exists; 1.0.0 uses deprecated MasterKeys API. LicenseModule has plaintext fallback.
 security-crypto = "1.1.0-alpha06"
 zxing = "3.5.3"
@@ -46,7 +46,7 @@ coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 
-json = { group = "org.json", name = "json", version = "20231013" }
+json = { group = "org.json", name = "json", version = "20251224" }
 javax-inject = { group = "javax.inject", name = "javax.inject", version = "1" }
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
@@ -58,6 +58,7 @@ zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
+android-lint = { id = "com.android.lint", version.ref = "agp" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }

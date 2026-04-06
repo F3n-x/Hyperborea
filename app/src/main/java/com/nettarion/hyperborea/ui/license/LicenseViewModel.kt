@@ -16,6 +16,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -29,11 +31,14 @@ class LicenseViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
 ) : ViewModel() {
 
+    private val _pairingError = MutableStateFlow<String?>(null)
+    val pairingError: StateFlow<String?> = _pairingError.asStateFlow()
+
     val licenseState: StateFlow<LicenseState> = licenseChecker.state
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LicenseState.Checking)
 
     val hasNetwork: StateFlow<Boolean> = systemMonitor.snapshot
-        .map { it.status.wifiIpAddress != null }
+        .map { it.status.isNetworkConnected }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     private var pollingJob: Job? = null
@@ -50,13 +55,13 @@ class LicenseViewModel @Inject constructor(
                 licenseChecker.check(silent = true)
             }
         }
-        // Auto-retry when WiFi becomes available while unlicensed
+        // Auto-retry when network becomes available while unlicensed
         viewModelScope.launch {
             systemMonitor.snapshot
-                .map { it.status.wifiIpAddress }
+                .map { it.status.isNetworkConnected }
                 .distinctUntilChanged()
-                .collect { ip ->
-                    if (ip != null && licenseChecker.state.value is LicenseState.Unlicensed) {
+                .collect { connected ->
+                    if (connected && licenseChecker.state.value is LicenseState.Unlicensed) {
                         licenseChecker.check(silent = true)
                     }
                 }
@@ -66,8 +71,14 @@ class LicenseViewModel @Inject constructor(
     fun requestPairing() {
         viewModelScope.launch {
             val result = licenseChecker.requestPairing()
-            if (result is PairingSession.Created) {
-                startPolling(result.pairingToken, result.expiresAt)
+            when (result) {
+                is PairingSession.Created -> {
+                    _pairingError.value = null
+                    startPolling(result.pairingToken, result.expiresAt)
+                }
+                is PairingSession.Error -> {
+                    _pairingError.value = result.message
+                }
             }
         }
     }
@@ -90,6 +101,7 @@ class LicenseViewModel @Inject constructor(
     fun cancelPairing() {
         pollingJob?.cancel()
         pollingJob = null
+        _pairingError.value = null
         viewModelScope.launch {
             licenseChecker.check()
         }
@@ -97,6 +109,7 @@ class LicenseViewModel @Inject constructor(
 
     fun unlinkDevice() {
         viewModelScope.launch {
+            _pairingError.value = null
             // Stop broadcasting before unlinking
             val intent = Intent(context, HyperboreaService::class.java).apply {
                 action = HyperboreaService.ACTION_DEACTIVATE_DISCARD

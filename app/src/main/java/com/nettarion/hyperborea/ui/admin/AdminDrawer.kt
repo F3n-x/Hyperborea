@@ -44,7 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nettarion.hyperborea.core.adapter.BroadcastId
 import com.nettarion.hyperborea.core.model.FanMode
@@ -132,6 +132,7 @@ private fun BroadcastsSection(viewModel: AdminViewModel, onOpenSettings: () -> U
     val enabledBroadcasts by viewModel.enabledBroadcasts.collectAsStateWithLifecycle()
     val overlayEnabled by viewModel.overlayEnabled.collectAsStateWithLifecycle()
     val fanMode by viewModel.fanMode.collectAsStateWithLifecycle()
+    val immersiveModeEnabled by viewModel.immersiveModeEnabled.collectAsStateWithLifecycle()
     val snapshot by viewModel.systemSnapshot.collectAsStateWithLifecycle()
 
     BroadcastId.entries.forEach { id ->
@@ -193,6 +194,36 @@ private fun BroadcastsSection(viewModel: AdminViewModel, onOpenSettings: () -> U
         Switch(
             checked = overlayEnabled,
             onCheckedChange = { viewModel.toggleOverlay(it) },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = MaterialTheme.colorScheme.primary,
+                checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+            ),
+        )
+    }
+
+    HorizontalDivider(color = colors.divider, modifier = Modifier.padding(vertical = 4.dp))
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Immersive Mode",
+                style = MaterialTheme.typography.bodyLarge,
+                color = colors.textHigh,
+            )
+            Text(
+                text = "Hide navigation and status bars",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.textMedium,
+            )
+        }
+        Switch(
+            checked = immersiveModeEnabled,
+            onCheckedChange = { viewModel.toggleImmersiveMode(it) },
             colors = SwitchDefaults.colors(
                 checkedThumbColor = MaterialTheme.colorScheme.primary,
                 checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),

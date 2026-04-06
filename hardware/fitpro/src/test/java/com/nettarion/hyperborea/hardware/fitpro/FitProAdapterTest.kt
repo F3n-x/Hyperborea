@@ -444,6 +444,9 @@ class FitProAdapterTest {
         override suspend fun enableComponent(packageName: String, className: String) = false
         override suspend fun grantUsbPermission(packageName: String) = onGrantUsbPermission(packageName)
         override suspend fun revokeUsbPermissions(packageName: String) = false
+        override suspend fun setImmersiveMode(enabled: Boolean) = false
+        override suspend fun setAdbEnabled(enabled: Boolean) = false
+        override suspend fun setUserSetupComplete(complete: Boolean) = false
     }
 
     // --- V1 handshake packet builders ---

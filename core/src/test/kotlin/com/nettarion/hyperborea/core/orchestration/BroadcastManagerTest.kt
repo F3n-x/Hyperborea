@@ -311,6 +311,10 @@ class BroadcastManagerTest {
         override fun setFanMode(mode: com.nettarion.hyperborea.core.model.FanMode) {
             fanMode.value = mode
         }
+        override val immersiveModeEnabled = MutableStateFlow(true)
+        override fun setImmersiveModeEnabled(enabled: Boolean) {
+            immersiveModeEnabled.value = enabled
+        }
     }
 
     private class FakeBroadcastAdapter(
