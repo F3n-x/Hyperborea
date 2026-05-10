@@ -9,12 +9,13 @@ import com.nettarion.hyperborea.core.ftms.FtmsDataEncoder
 import com.nettarion.hyperborea.core.ftms.RevolutionCounter
 import java.io.InputStream
 import java.io.OutputStream
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -29,19 +30,22 @@ class WifiClientHandler(
     private val scope: CoroutineScope,
     private val onCommand: (DeviceCommand) -> Unit,
     private val logger: AppLogger,
+    private val notificationIntervalMs: Long = NOTIFICATION_INTERVAL_MS,
+    private val ioContext: CoroutineContext = Dispatchers.IO,
 ) {
     internal val enabledNotifications: MutableSet<ShortUuid> =
         java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
     private val writeMutex = Mutex()
+    private val sendMutex = Mutex()
     @Volatile var isClosed = false
         private set
 
     private val revCounter = RevolutionCounter()
-    private val pendingData = MutableStateFlow<ExerciseData?>(null)
+    private val latestData = MutableStateFlow(ExerciseData.ZERO)
     private var sendJob: Job? = null
     private var consecutiveWriteErrors = 0
 
-    suspend fun runReadLoop() = withContext(Dispatchers.IO) {
+    suspend fun runReadLoop() = withContext(ioContext) {
         try {
             while (!isClosed) {
                 val request = WifiCodec.readRequest(input) ?: break
@@ -57,20 +61,26 @@ class WifiClientHandler(
     }
 
     fun updateData(data: ExerciseData) {
-        pendingData.value = data
+        latestData.value = data
     }
 
+    /**
+     * Re-sends the latest known sample at a fixed cadence for as long as the client is connected,
+     * regardless of whether the data changed — real FTMS hardware notifies continuously, and clients
+     * (e.g. Zwift) wedge if the stream goes silent while they are subscribed. Seeded with
+     * [ExerciseData.ZERO] so the stream is alive even before a workout starts.
+     */
     fun startSendLoop() {
         sendJob = scope.launch {
-            pendingData.filterNotNull().collect { data ->
-                sendNotificationsInternal(data)
-                delay(NOTIFICATION_INTERVAL_MS)
+            while (isActive && !isClosed) {
+                sendNotificationsInternal(latestData.value)
+                delay(notificationIntervalMs)
             }
         }
     }
 
-    private suspend fun sendNotificationsInternal(data: ExerciseData) {
-        if (isClosed) return
+    private suspend fun sendNotificationsInternal(data: ExerciseData) = sendMutex.withLock {
+        if (isClosed) return@withLock
         val now = System.currentTimeMillis()
 
         if (enabledNotifications.contains(serviceDef.dataCharacteristic)) {
@@ -229,13 +239,19 @@ class WifiClientHandler(
         }
 
         send(WifiCodec.encodeResponse(WifiCodec.ID_ENABLE_NOTIFICATIONS, request.sequence, WifiCodec.RESP_SUCCESS))
+
+        // Push the current sample immediately so the client doesn't wait up to one tick for the first
+        // frame after subscribing (and so it never sees a silent stream).
+        if (request.enable) {
+            sendNotificationsInternal(latestData.value)
+        }
     }
 
     private suspend fun sendNotification(bytes: ByteArray) {
         if (isClosed) return
         try {
             writeMutex.withLock {
-                withContext(Dispatchers.IO) {
+                withContext(ioContext) {
                     output.write(bytes)
                     output.flush()
                 }
@@ -254,7 +270,7 @@ class WifiClientHandler(
         if (isClosed) return
         try {
             writeMutex.withLock {
-                withContext(Dispatchers.IO) {
+                withContext(ioContext) {
                     output.write(bytes)
                     output.flush()
                 }

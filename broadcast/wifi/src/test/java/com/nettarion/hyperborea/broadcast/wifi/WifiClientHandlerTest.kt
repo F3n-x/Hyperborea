@@ -3,12 +3,17 @@ package com.nettarion.hyperborea.broadcast.wifi
 import com.google.common.truth.Truth.assertThat
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceType
+import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.test.TestAppLogger
 import com.nettarion.hyperborea.core.test.buildDeviceInfo
 import com.nettarion.hyperborea.core.ftms.ControlPointParser
+import com.nettarion.hyperborea.core.ftms.FtmsDataEncoder
 import com.nettarion.hyperborea.core.ftms.FtmsServiceMetadata
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -426,10 +431,75 @@ class WifiClientHandlerTest {
         handler.runReadLoop()
 
         val responses = parseResponses(output.toByteArray())
-        assertThat(responses).hasSize(3)
+        // req1 → discover-services, req2 → read, req3 → enable, plus one immediate data notification
+        // pushed because enabling the data characteristic kicks off the stream straight away.
+        assertThat(responses).hasSize(4)
         assertThat(responses[0].seq).isEqualTo(0x0A.toByte())
         assertThat(responses[1].seq).isEqualTo(0x0B.toByte())
         assertThat(responses[2].seq).isEqualTo(0x0C.toByte())
+        assertThat(responses[3].id).isEqualTo(WifiCodec.ID_NOTIFICATION)
+    }
+
+    @Test
+    fun `enable notifications pushes an immediate data notification with the zero seed`() = runTest {
+        val dataChar = serviceDef.dataCharacteristic
+        val payload = WifiCodec.encodeUuidBlob(dataChar) + byteArrayOf(0x01)
+        val request = WifiCodec.encodeResponse(WifiCodec.ID_ENABLE_NOTIFICATIONS, 0x01, 0x00, payload)
+        val output = ByteArrayOutputStream()
+        val handler = WifiClientHandler(
+            clientId = "test",
+            input = ByteArrayInputStream(request),
+            output = output,
+            deviceType = DeviceType.BIKE,
+            serviceDef = serviceDef,
+            scope = this,
+            onCommand = { commands.add(it) },
+            logger = logger,
+        )
+
+        handler.runReadLoop()
+
+        val responses = parseResponses(output.toByteArray())
+        assertThat(responses).hasSize(2)
+        assertThat(responses[0].id).isEqualTo(WifiCodec.ID_ENABLE_NOTIFICATIONS)
+        assertThat(responses[0].code).isEqualTo(WifiCodec.RESP_SUCCESS)
+        assertThat(responses[1].id).isEqualTo(WifiCodec.ID_NOTIFICATION)
+        assertThat(WifiCodec.decodeShortUuid(responses[1].payload, 0)).isEqualTo(dataChar)
+        assertThat(responses[1].payload.copyOfRange(16, responses[1].payload.size))
+            .isEqualTo(FtmsDataEncoder.encodeData(DeviceType.BIKE, ExerciseData.ZERO))
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `send loop keeps emitting data notifications at a fixed cadence even when data never changes`() = runTest {
+        val output = ByteArrayOutputStream()
+        val handler = WifiClientHandler(
+            clientId = "test",
+            input = ByteArrayInputStream(ByteArray(0)),
+            output = output,
+            deviceType = DeviceType.BIKE,
+            serviceDef = serviceDef,
+            scope = this,
+            onCommand = { commands.add(it) },
+            logger = logger,
+            notificationIntervalMs = 10L,
+            ioContext = EmptyCoroutineContext, // keep socket writes on the test scheduler (virtual time)
+        )
+        handler.enabledNotifications.add(serviceDef.dataCharacteristic)
+
+        handler.startSendLoop()
+        advanceTimeBy(45) // ticks at t=0,10,20,30,40
+        handler.close()
+        advanceUntilIdle()
+
+        val notifications = parseResponses(output.toByteArray())
+            .filter { it.id == WifiCodec.ID_NOTIFICATION }
+        assertThat(notifications.size).isAtLeast(3)
+        val expectedZero = FtmsDataEncoder.encodeData(DeviceType.BIKE, ExerciseData.ZERO)
+        for (n in notifications) {
+            assertThat(WifiCodec.decodeShortUuid(n.payload, 0)).isEqualTo(serviceDef.dataCharacteristic)
+            assertThat(n.payload.copyOfRange(16, n.payload.size)).isEqualTo(expectedZero)
+        }
     }
 
     @Test

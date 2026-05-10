@@ -630,6 +630,30 @@ class FtmsDataEncoderTest {
         assertThat(result).isEqualTo(byteArrayOf(0x00, 0x00))
     }
 
+    // --- ExerciseData.ZERO seed ---
+
+    @Test
+    fun `encodes ExerciseData ZERO seed for every device type without throwing`() {
+        for (type in DeviceType.entries) {
+            val encoded = FtmsDataEncoder.encodeData(type, ExerciseData.ZERO)
+            assertThat(encoded.size).isAtLeast(2)
+        }
+    }
+
+    @Test
+    fun `encodeCpsMeasurement accepts ExerciseData ZERO seed`() {
+        val encoded = FtmsDataEncoder.encodeCpsMeasurement(ExerciseData.ZERO, 0L, 0, 0L, 0)
+        assertThat(encoded).hasLength(14)
+        // Instantaneous power field (sint16 LE at offset 2) should be 0
+        assertThat(sint16LE(encoded, 2)).isEqualTo(0)
+    }
+
+    @Test
+    fun `encodeTrainingStatus for ZERO seed workoutMode is Other`() {
+        assertThat(FtmsDataEncoder.encodeTrainingStatus(ExerciseData.ZERO.workoutMode))
+            .isEqualTo(byteArrayOf(0x00, 0x00))
+    }
+
     // --- Helpers ---
 
     private fun uint16LE(data: ByteArray, offset: Int): Int =

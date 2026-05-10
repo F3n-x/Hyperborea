@@ -36,7 +36,7 @@ class FtmsAdapter(
             onError = { msg -> setError(msg) },
         )
         server = bleServer
-        bleServer.start(deviceInfo.name)
+        bleServer.start(deviceInfo.name, scope)
         return { data -> bleServer.broadcastData(data) }
     }
 

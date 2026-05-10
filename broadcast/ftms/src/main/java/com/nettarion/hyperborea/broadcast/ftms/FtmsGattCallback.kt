@@ -28,6 +28,7 @@ class FtmsGattCallback(
     private val onClientDisconnected: (BluetoothDevice) -> Unit,
     private val onCommand: (DeviceCommand) -> Unit,
     private val onServiceAdded: () -> Unit,
+    private val onSubscriptionEnabled: (UUID) -> Unit = {},
 ) : BluetoothGattServerCallback() {
 
     internal var gattServer: BluetoothGattServer? = null
@@ -155,6 +156,11 @@ class FtmsGattCallback(
             logger.d(TAG, "CCCD write for ${charUuid}: ${value.joinToString { "%02X".format(it) }}")
             if (responseNeeded) {
                 sendGattResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+            }
+            // Notifications/indications just got enabled — push the current sample immediately so the
+            // client doesn't wait up to one notification tick (and never sees a silent stream).
+            if (isSubscribed(charUuid)) {
+                onSubscriptionEnabled(charUuid)
             }
         } else {
             if (responseNeeded) {

@@ -21,7 +21,12 @@ import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.ftms.FtmsDataEncoder
 import com.nettarion.hyperborea.core.ftms.RevolutionCounter
 import android.os.RemoteException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
 @Suppress("DEPRECATION")
@@ -44,12 +49,14 @@ class FtmsBleServer(
     private var advertiseCallback: AdvertiseCallback? = null
     private val revCounter = RevolutionCounter()
     private var lastTrainingStatus: Byte = 0x01 // Idle
+    @Volatile private var latestData: ExerciseData = ExerciseData.ZERO
+    private var tickerJob: Job? = null
 
     // Service addition synchronization
     private val serviceAddedChannel = Channel<Unit>(Channel.UNLIMITED)
 
     @SuppressLint("MissingPermission") // Checked by requireBluetoothPermission() below
-    suspend fun start(deviceName: String) {
+    suspend fun start(deviceName: String, scope: CoroutineScope) {
         requireBluetoothPermission()
         isStopped = false
 
@@ -77,6 +84,7 @@ class FtmsBleServer(
             },
             onCommand = onCommand,
             onServiceAdded = { serviceAddedChannel.trySend(Unit) },
+            onSubscriptionEnabled = { emitNotifications(latestData) },
         )
         callback = gattCallback
 
@@ -96,6 +104,18 @@ class FtmsBleServer(
 
         // Start advertising
         startAdvertising()
+
+        // Re-send the latest sample at a fixed cadence while a client is connected — real FTMS
+        // hardware notifies continuously, and clients (e.g. Zwift) wedge if the stream goes silent
+        // while they are subscribed. Seeded with ExerciseData.ZERO so the stream is alive even before
+        // a workout starts; a real data change still pushes instantly via broadcastData().
+        tickerJob = scope.launch {
+            while (isActive && !isStopped) {
+                if (connectedDevice != null) emitNotifications(latestData)
+                delay(NOTIFICATION_INTERVAL_MS)
+            }
+        }
+
         logger.i(TAG, "BLE FTMS server started, advertising as '$deviceName'")
     }
 
@@ -103,6 +123,8 @@ class FtmsBleServer(
     fun stop() {
         logger.i(TAG, "BLE FTMS server stopping")
         isStopped = true
+        tickerJob?.cancel()
+        tickerJob = null
         stopAdvertising()
 
         gattServer?.close()
@@ -111,10 +133,17 @@ class FtmsBleServer(
         connectedDevice = null
         revCounter.reset()
         lastTrainingStatus = 0x01
+        latestData = ExerciseData.ZERO
     }
 
-    @SuppressLint("MissingPermission") // Permission verified during start()
     fun broadcastData(data: ExerciseData) {
+        latestData = data
+        emitNotifications(data)
+    }
+
+    @Synchronized
+    @SuppressLint("MissingPermission") // Permission verified during start()
+    private fun emitNotifications(data: ExerciseData) {
         if (isStopped) return
         val server = gattServer ?: return
         val device = connectedDevice ?: return
@@ -257,5 +286,6 @@ class FtmsBleServer(
     private companion object {
         const val TAG = "FtmsBle"
         const val SERVICE_ADD_TIMEOUT_MS = 5000L
+        const val NOTIFICATION_INTERVAL_MS = 250L
     }
 }

@@ -313,6 +313,58 @@ class FtmsGattCallbackTest {
     }
 
     @Test
+    fun `CCCD enable write fires onSubscriptionEnabled with characteristic UUID`() {
+        val enabledFor = mutableListOf<UUID>()
+        val cb = FtmsGattCallback(
+            context = context,
+            logger = logger,
+            deviceInfo = deviceInfo,
+            onClientConnected = {},
+            onClientDisconnected = {},
+            onCommand = {},
+            onServiceAdded = {},
+            onSubscriptionEnabled = { enabledFor.add(it) },
+        ).apply { gattServer = this@FtmsGattCallbackTest.gattServer }
+
+        val charUuid = FtmsServiceBuilder.dataCharacteristicUuid(DeviceType.BIKE)
+        val charMock = mockk<BluetoothGattCharacteristic> { every { uuid } returns charUuid }
+        val descriptor = mockk<BluetoothGattDescriptor> {
+            every { uuid } returns FtmsServiceBuilder.CCCD_UUID
+            every { characteristic } returns charMock
+        }
+
+        cb.onDescriptorWriteRequest(device, 1, descriptor, false, true, 0, byteArrayOf(0x01, 0x00))
+
+        assertThat(enabledFor).containsExactly(charUuid)
+    }
+
+    @Test
+    fun `CCCD disable write does not fire onSubscriptionEnabled`() {
+        val enabledFor = mutableListOf<UUID>()
+        val cb = FtmsGattCallback(
+            context = context,
+            logger = logger,
+            deviceInfo = deviceInfo,
+            onClientConnected = {},
+            onClientDisconnected = {},
+            onCommand = {},
+            onServiceAdded = {},
+            onSubscriptionEnabled = { enabledFor.add(it) },
+        ).apply { gattServer = this@FtmsGattCallbackTest.gattServer }
+
+        val charUuid = FtmsServiceBuilder.dataCharacteristicUuid(DeviceType.BIKE)
+        val charMock = mockk<BluetoothGattCharacteristic> { every { uuid } returns charUuid }
+        val descriptor = mockk<BluetoothGattDescriptor> {
+            every { uuid } returns FtmsServiceBuilder.CCCD_UUID
+            every { characteristic } returns charMock
+        }
+
+        cb.onDescriptorWriteRequest(device, 1, descriptor, false, true, 0, byteArrayOf(0x00, 0x00))
+
+        assertThat(enabledFor).isEmpty()
+    }
+
+    @Test
     fun `non-CCCD descriptor read is rejected`() {
         val descriptor = mockk<BluetoothGattDescriptor> {
             every { uuid } returns UUID.randomUUID()

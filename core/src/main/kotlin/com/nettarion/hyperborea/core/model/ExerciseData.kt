@@ -27,4 +27,24 @@ data class ExerciseData(
     val strokeRate: Int? = null,
     val splitTime: Int? = null,
     val avgSplitTime: Int? = null,
-)
+) {
+    companion object {
+        /**
+         * All-zero seed sample. Broadcast adapters use this so their FTMS / CPS / Training-Status
+         * notification streams are alive (steady all-zero frames) even before a workout has started,
+         * which is what real FTMS hardware does and what clients like Zwift expect.
+         */
+        val ZERO = ExerciseData(
+            power = 0,
+            cadence = 0,
+            speed = 0f,
+            resistance = null,
+            incline = null,
+            heartRate = null,
+            distance = null,
+            calories = null,
+            elapsedTime = 0L,
+            workoutMode = null,
+        )
+    }
+}
