@@ -286,10 +286,9 @@ object V1Codec {
             val raw = ByteBuffer.wrap(data, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
             raw.toFloat() / 10000f
         }
-        V1Converter.KEY_OBJECT -> {
-            // First byte is key state; remaining 13 bytes unused
-            (data[0].toInt() and 0xFF).toFloat()
-        }
+        // KEY_OBJECT is decoded into a KeyObject by decodeDataResponseForFields, not through here;
+        // this branch only exists so the `when` stays exhaustive.
+        V1Converter.KEY_OBJECT -> 0f
     }
 
     private fun encodeMultiPacket(data: ByteArray): List<ByteArray> {
@@ -407,6 +406,7 @@ object V1Codec {
         }
 
         val fields = mutableMapOf<V1DataField, Float>()
+        var keyObject: KeyObject? = null
         var offset = 0
         val readFields = fieldSet.sortedBy { it.fieldIndex }
         val expectedSize = readFields.sumOf { it.sizeBytes }
@@ -418,10 +418,21 @@ object V1Codec {
         for (field in readFields) {
             if (offset + field.sizeBytes > payload.size) break
             val fieldData = payload.copyOfRange(offset, offset + field.sizeBytes)
-            fields[field] = convertFromBytes(field, fieldData)
+            if (field == V1DataField.KEY_OBJECT) {
+                keyObject = decodeKeyObject(fieldData)
+            } else {
+                fields[field] = convertFromBytes(field, fieldData)
+            }
             offset += field.sizeBytes
         }
 
-        return V1Message.Incoming.DataResponse(status, fields)
+        return V1Message.Incoming.DataResponse(status, fields, keyObject)
+    }
+
+    /** 14-byte KEY_OBJECT payload: code(2 LE), rawKey(8), timePressed(2 LE), timeHeld(2 LE). */
+    private fun decodeKeyObject(data: ByteArray): KeyObject {
+        fun u16(i: Int): Int =
+            if (data.size > i + 1) (data[i].toInt() and 0xFF) or ((data[i + 1].toInt() and 0xFF) shl 8) else 0
+        return KeyObject(code = u16(0), timePressed = u16(10), timeHeld = u16(12))
     }
 }

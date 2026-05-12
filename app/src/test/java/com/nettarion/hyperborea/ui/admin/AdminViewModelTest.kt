@@ -10,6 +10,7 @@ import com.nettarion.hyperborea.core.LogStore
 import com.nettarion.hyperborea.core.adapter.AdapterState
 import com.nettarion.hyperborea.core.adapter.BroadcastId
 import com.nettarion.hyperborea.core.adapter.HardwareAdapter
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
@@ -31,8 +32,10 @@ import com.nettarion.hyperborea.platform.update.VersionProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -81,6 +84,7 @@ class AdminViewModelTest {
         override val exerciseData = MutableStateFlow<ExerciseData?>(null)
         override val deviceInfo = MutableStateFlow<DeviceInfo?>(null)
         override val deviceIdentity = MutableStateFlow<DeviceIdentity?>(null)
+        override val consoleKeyPresses: Flow<ConsoleKey> = emptyFlow()
         override val prerequisites: List<Prerequisite> = emptyList()
         override fun canOperate(snapshot: SystemSnapshot): Boolean = true
         override suspend fun connect() {}

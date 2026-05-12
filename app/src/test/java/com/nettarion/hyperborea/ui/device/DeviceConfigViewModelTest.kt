@@ -5,6 +5,7 @@ import com.google.common.truth.Truth.assertThat
 import com.nettarion.hyperborea.MainDispatcherRule
 import com.nettarion.hyperborea.core.adapter.AdapterState
 import com.nettarion.hyperborea.core.adapter.HardwareAdapter
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
@@ -17,8 +18,10 @@ import com.nettarion.hyperborea.core.system.SystemSnapshot
 import com.nettarion.hyperborea.core.test.TestAppLogger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -151,6 +154,7 @@ private class FakeHardwareAdapter : HardwareAdapter {
     override val exerciseData: StateFlow<ExerciseData?> = MutableStateFlow(null)
     override val deviceInfo: StateFlow<DeviceInfo?> = MutableStateFlow(null)
     override val deviceIdentity: StateFlow<DeviceIdentity?> = MutableStateFlow(null)
+    override val consoleKeyPresses: Flow<ConsoleKey> = emptyFlow()
     override val prerequisites: List<Prerequisite> = emptyList()
     override fun canOperate(snapshot: SystemSnapshot): Boolean = true
     override suspend fun connect() {}

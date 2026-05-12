@@ -1,6 +1,7 @@
 package com.nettarion.hyperborea.hardware.fitpro.v2
 
 import com.nettarion.hyperborea.core.AppLogger
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
@@ -14,7 +15,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -36,6 +39,9 @@ class V2Session(
 
     private val _sessionState = MutableStateFlow<SessionState>(SessionState.Disconnected)
     override val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
+
+    // The V2 protocol has no console-keypad field — this never emits.
+    override val consoleKeyPresses: SharedFlow<ConsoleKey> = MutableSharedFlow()
 
     private var heartbeatJob: Job? = null
     private var receiveJob: Job? = null

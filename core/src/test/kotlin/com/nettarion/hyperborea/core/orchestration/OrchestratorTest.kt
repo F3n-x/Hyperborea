@@ -9,6 +9,7 @@ import com.nettarion.hyperborea.core.adapter.SensorAdapter
 import com.nettarion.hyperborea.core.adapter.SensorId
 import com.nettarion.hyperborea.core.adapter.SensorReading
 import com.nettarion.hyperborea.core.model.ClientInfo
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
@@ -696,6 +697,7 @@ class OrchestratorTest {
         override val deviceInfo = MutableStateFlow<DeviceInfo?>(buildDeviceInfo())
         override val exerciseData = MutableStateFlow<ExerciseData?>(null)
         override val deviceIdentity = MutableStateFlow<DeviceIdentity?>(null)
+        override val consoleKeyPresses = MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8)
         var connectCalled = false
         var connectCallCount = 0
         var disconnectCalled = false

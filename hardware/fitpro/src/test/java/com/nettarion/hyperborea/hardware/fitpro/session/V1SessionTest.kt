@@ -2,6 +2,7 @@ package com.nettarion.hyperborea.hardware.fitpro.session
 
 import com.google.common.truth.Truth.assertThat
 import com.nettarion.hyperborea.core.test.TestAppLogger
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.test.buildDeviceInfo
 import com.nettarion.hyperborea.hardware.fitpro.v1.V1Codec
@@ -456,6 +457,71 @@ class V1SessionTest {
         assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
     }
 
+    // --- Console keypad (KEY_OBJECT) ---
+
+    @Test
+    fun `console keypad press emits one ConsoleKey per fresh press`() = runTest {
+        val session = startStreamingSession()
+        val received = mutableListOf<ConsoleKey>()
+        val collector = backgroundScope.launch { session.consoleKeyPresses.collect { received += it } }
+        advanceUntilIdle() // let the collector subscribe before we emit
+
+        // Fresh press: code goes 0 → 9 (a resistance/gear button) → one RESISTANCE_UP
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(9)) }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        // Still held (code stays 9) → no further emit
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(9)) }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        // Released (0) then pressed again → another RESISTANCE_UP
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(0)) }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(9)) }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        collector.cancel()
+        assertThat(received).containsExactly(ConsoleKey.RESISTANCE_UP, ConsoleKey.RESISTANCE_UP)
+    }
+
+    @Test
+    fun `console keypad incline codes map to incline ConsoleKeys`() = runTest {
+        val session = startStreamingSession()
+        val received = mutableListOf<ConsoleKey>()
+        val collector = backgroundScope.launch { session.consoleKeyPresses.collect { received += it } }
+        advanceUntilIdle()
+
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(5)) } // INCLINE_UP
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(0)) }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(6)) } // INCLINE_DOWN
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        collector.cancel()
+        assertThat(received).containsExactly(ConsoleKey.INCLINE_UP, ConsoleKey.INCLINE_DOWN)
+    }
+
+    @Test
+    fun `console keypad ignores unmapped key codes`() = runTest {
+        val session = startStreamingSession()
+        val received = mutableListOf<ConsoleKey>()
+        val collector = backgroundScope.launch { session.consoleKeyPresses.collect { received += it } }
+        advanceUntilIdle()
+
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(1)) } // STOP — not handled
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        collector.cancel()
+        assertThat(received).isEmpty()
+    }
+
     @Test
     fun `writeFeature SetTargetSpeed queues KPH field`() = runTest {
         val session = startStreamingSession()
@@ -683,6 +749,22 @@ class V1SessionTest {
         fieldData[13] = ((rpmValue shr 8) and 0xFF).toByte()
         // WORKOUT_MODE at offset 33 (after KEY_OBJECT=14, VOLUME=1, PULSE=4)
         fieldData[33] = workoutMode.toByte()
+
+        val totalLen = 4 + fieldData.size + 1
+        val header = byteArrayOf(0x07, totalLen.toByte(), 0x02, 0x02) // status=DONE
+        val withoutChecksum = header + fieldData
+        return withoutChecksum + V1Codec.checksum(withoutChecksum)
+    }
+
+    /**
+     * Build a DataResponse carrying a KEY_OBJECT code (console keypad state).
+     * 35 periodicReadFields sorted by fieldIndex = 87 bytes total; KEY_OBJECT (14 bytes) starts at
+     * offset 14 (after KPH=2, GRADE=2, RESISTANCE=2, WATTS=2, CURRENT_DISTANCE=4), `code` is bytes 0-1 LE.
+     */
+    private fun buildDataResponseWithKeyCode(code: Int): ByteArray {
+        val fieldData = ByteArray(87)
+        fieldData[14] = (code and 0xFF).toByte()
+        fieldData[15] = ((code shr 8) and 0xFF).toByte()
 
         val totalLen = 4 + fieldData.size + 1
         val header = byteArrayOf(0x07, totalLen.toByte(), 0x02, 0x02) // status=DONE

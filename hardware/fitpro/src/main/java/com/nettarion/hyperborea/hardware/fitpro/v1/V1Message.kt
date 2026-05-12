@@ -1,5 +1,14 @@
 package com.nettarion.hyperborea.hardware.fitpro.v1
 
+/**
+ * Decoded FitPro V1 `KEY_OBJECT` field (field 7, 14 bytes): the console membrane-keypad state.
+ * Byte layout: `code (uint16 LE)`, `rawKey (uint64)`, `timePressed (uint16 LE)`, `timeHeld (uint16 LE)`.
+ * `code` is the currently-pressed key (0 = none, e.g. SPEED_UP=3, INCLINE_UP=5, RESISTANCE_UP=7,
+ * GEAR_UP=9, …); `timePressed` is a per-press counter; `timeHeld` is how long the key has been held
+ * this press, in ms.
+ */
+data class KeyObject(val code: Int, val timePressed: Int, val timeHeld: Int)
+
 sealed interface V1Message {
 
     sealed interface Outgoing : V1Message {
@@ -56,6 +65,7 @@ sealed interface V1Message {
         data class DataResponse(
             val status: Int,
             val fields: Map<V1DataField, Float>,
+            val keyObject: KeyObject? = null,
         ) : Incoming
         data class GenericResponse(val commandId: Int, val status: Int, val payload: ByteArray) : Incoming {
             override fun equals(other: Any?) = other is GenericResponse &&

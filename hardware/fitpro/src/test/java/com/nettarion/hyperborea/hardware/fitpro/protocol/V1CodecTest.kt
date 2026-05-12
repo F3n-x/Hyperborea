@@ -1,6 +1,7 @@
 package com.nettarion.hyperborea.hardware.fitpro.protocol
 
 import com.google.common.truth.Truth.assertThat
+import com.nettarion.hyperborea.hardware.fitpro.v1.KeyObject
 import com.nettarion.hyperborea.hardware.fitpro.v1.V1Codec
 import com.nettarion.hyperborea.hardware.fitpro.v1.V1DataField
 import com.nettarion.hyperborea.hardware.fitpro.v1.V1Message
@@ -141,6 +142,36 @@ class V1CodecTest {
         val response = decoded as V1Message.Incoming.DataResponse
         assertThat(response.status).isEqualTo(V1Message.STATUS_SECURITY_BLOCK)
         assertThat(response.fields).isEmpty()
+    }
+
+    @Test
+    fun `decode DataResponse extracts KEY_OBJECT into keyObject`() {
+        // KEY_OBJECT layout (14 bytes): code(2 LE), rawKey(8), timePressed(2 LE), timeHeld(2 LE).
+        // code=9 (a console keypad button), timePressed=5297 (0x14B1), timeHeld=50 (0x0032).
+        val payload = byteArrayOf(
+            0x09, 0x00,                                              // code
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x00,         // rawKey (ignored)
+            0xB1.toByte(), 0x14,                                     // timePressed
+            0x32, 0x00,                                             // timeHeld
+        )
+
+        val decoded = V1Codec.decodeDataResponse(
+            V1Message.STATUS_DONE, payload, setOf(V1DataField.KEY_OBJECT),
+        )
+        assertThat(decoded).isInstanceOf(V1Message.Incoming.DataResponse::class.java)
+        val response = decoded as V1Message.Incoming.DataResponse
+        assertThat(response.keyObject).isEqualTo(KeyObject(code = 9, timePressed = 5297, timeHeld = 50))
+        assertThat(response.fields).doesNotContainKey(V1DataField.KEY_OBJECT)
+    }
+
+    @Test
+    fun `decode DataResponse has null keyObject when KEY_OBJECT not in field set`() {
+        val payload = byteArrayOf(0xC8.toByte(), 0x00) // WATTS only
+        val decoded = V1Codec.decodeDataResponse(
+            V1Message.STATUS_DONE, payload, setOf(V1DataField.WATTS),
+        ) as V1Message.Incoming.DataResponse
+        assertThat(decoded.keyObject).isNull()
+        assertThat(decoded.fields).containsKey(V1DataField.WATTS)
     }
 
     @Test

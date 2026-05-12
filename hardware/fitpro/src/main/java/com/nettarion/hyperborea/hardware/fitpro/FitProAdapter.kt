@@ -2,6 +2,7 @@ package com.nettarion.hyperborea.hardware.fitpro
 
 import com.nettarion.hyperborea.core.adapter.AdapterState
 import com.nettarion.hyperborea.core.AppLogger
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
@@ -23,8 +24,12 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -76,10 +81,15 @@ class FitProAdapter @Inject constructor(
     private val _state = MutableStateFlow<AdapterState>(AdapterState.Inactive)
     override val state: StateFlow<AdapterState> = _state.asStateFlow()
 
+    private val _consoleKeyPresses =
+        MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val consoleKeyPresses: SharedFlow<ConsoleKey> = _consoleKeyPresses.asSharedFlow()
+
     private var session: FitProSession? = null
     private var initialElapsedSeconds: Long = 0L
     private var dataForwardJob: Job? = null
     private var identityForwardJob: Job? = null
+    private var keyForwardJob: Job? = null
     private var stateMonitorJob: Job? = null
 
     override suspend fun connect() {
@@ -145,6 +155,14 @@ class FitProAdapter @Inject constructor(
                     logger.e(TAG, "Data forwarding failed", e)
                     _state.value = AdapterState.Error("Data forwarding failed: ${e.message}", e)
                 }
+            }
+
+            // Forward console-keypad presses from session
+            keyForwardJob = scope.launch {
+                try {
+                    newSession.consoleKeyPresses.collect { key -> _consoleKeyPresses.tryEmit(key) }
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { logger.e(TAG, "Console-key forwarding failed", e) }
             }
 
             // Forward device identity changes and derive DeviceInfo
@@ -221,6 +239,8 @@ class FitProAdapter @Inject constructor(
 
         dataForwardJob?.cancel()
         dataForwardJob = null
+        keyForwardJob?.cancel()
+        keyForwardJob = null
         identityForwardJob?.cancel()
         identityForwardJob = null
         stateMonitorJob?.cancel()

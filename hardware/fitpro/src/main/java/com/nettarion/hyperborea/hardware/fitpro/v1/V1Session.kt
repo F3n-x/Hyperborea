@@ -1,6 +1,7 @@
 package com.nettarion.hyperborea.hardware.fitpro.v1
 
 import com.nettarion.hyperborea.core.AppLogger
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
@@ -16,9 +17,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -42,6 +47,10 @@ class V1Session(
     private val _sessionState = MutableStateFlow<SessionState>(SessionState.Disconnected)
     override val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
 
+    private val _consoleKeyPresses =
+        MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val consoleKeyPresses: SharedFlow<ConsoleKey> = _consoleKeyPresses.asSharedFlow()
+
     private var pollJob: Job? = null
     private var pendingWriteFields: Map<V1DataField, Float> = emptyMap()
     private val pendingWriteMutex = Mutex()
@@ -50,6 +59,7 @@ class V1Session(
     private var consecutivePollErrors = 0
     private var lastSentGrade = 0f
     private var lastSentSpeed = 0f
+    private var lastKeyCode = -1 // for KEY_OBJECT press-edge detection
 
     /** Device capabilities read from MCU during handshake. */
     var capabilities: V1Capabilities? = null
@@ -490,6 +500,7 @@ class V1Session(
             }
 
             applyDataResponse(decoded.fields)
+            handleKeyObject(decoded.keyObject)
             estimatePowerIfNeeded()
             consecutivePollErrors = 0
             _exerciseData.value = accumulator.snapshot()
@@ -554,6 +565,8 @@ class V1Session(
                 V1DataField.STROKES_PER_MINUTE -> accumulator.updateStrokeRate(value.toInt())
                 V1DataField.FIVE_HUNDRED_SPLIT -> accumulator.updateSplitTime(value.toInt())
                 V1DataField.AVG_FIVE_HUNDRED_SPLIT -> accumulator.updateAvgSplitTime(value.toInt())
+                // KEY_OBJECT is decoded onto DataResponse.keyObject and handled in handleKeyObject(),
+                // so it never reaches this map — this case only keeps the `when` exhaustive.
                 V1DataField.KEY_OBJECT,
                 V1DataField.RUNNING_TIME,
                 V1DataField.DISTANCE,
@@ -582,6 +595,34 @@ class V1Session(
                 V1DataField.IS_READY_TO_DISCONNECT -> { /* write-only, capability, or unprocessed fields */ }
             }
         }
+    }
+
+    /**
+     * Emits a [ConsoleKey] on each fresh press of the console membrane keypad. KEY_OBJECT reports the
+     * *currently-pressed* key (and 0 on release), so we edge-detect: emit when the code changes to a
+     * new non-zero value. The equipment's own MCU acts on the resistance/incline/speed keys directly,
+     * so we don't drive anything from this — it's exposed for the UI (and diagnostics) only.
+     */
+    private fun handleKeyObject(keyObject: KeyObject?) {
+        val code = keyObject?.code ?: 0
+        if (code == lastKeyCode) return
+        lastKeyCode = code
+        if (code == 0) return
+        val key = fitProKeyToConsoleKey(code)
+        logger.d(TAG, "Console keypad: code=$code held=${keyObject?.timeHeld ?: 0}ms${key?.let { " ($it)" } ?: ""}")
+        key?.let { _consoleKeyPresses.tryEmit(it) }
+    }
+
+    private fun fitProKeyToConsoleKey(code: Int): ConsoleKey? = when (code) {
+        KEY_SPEED_UP -> ConsoleKey.SPEED_UP
+        KEY_SPEED_DOWN -> ConsoleKey.SPEED_DOWN
+        KEY_INCLINE_UP -> ConsoleKey.INCLINE_UP
+        KEY_INCLINE_DOWN -> ConsoleKey.INCLINE_DOWN
+        // GEAR_UP/DOWN map to resistance — on bike consoles the +/- buttons are the resistance/gear
+        // selector and there's no separate "gear" the app tracks.
+        KEY_RESISTANCE_UP, KEY_GEAR_UP -> ConsoleKey.RESISTANCE_UP
+        KEY_RESISTANCE_DOWN, KEY_GEAR_DOWN -> ConsoleKey.RESISTANCE_DOWN
+        else -> null // stop / fan / volume / etc. — not mapped (yet)
     }
 
     private fun estimatePowerIfNeeded() {
@@ -683,5 +724,15 @@ class V1Session(
         private const val WORKOUT_MODE_PAUSE = 3f
         private const val WORKOUT_MODE_WARM_UP = 10f
         private const val WORKOUT_MODE_COOL_DOWN = 11f
+
+        // KEY_OBJECT key codes for the console-keypad buttons we forward.
+        private const val KEY_SPEED_UP = 3
+        private const val KEY_SPEED_DOWN = 4
+        private const val KEY_INCLINE_UP = 5
+        private const val KEY_INCLINE_DOWN = 6
+        private const val KEY_RESISTANCE_UP = 7
+        private const val KEY_RESISTANCE_DOWN = 8
+        private const val KEY_GEAR_UP = 9
+        private const val KEY_GEAR_DOWN = 10
     }
 }
