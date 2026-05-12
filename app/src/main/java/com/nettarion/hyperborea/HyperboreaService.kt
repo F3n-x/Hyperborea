@@ -61,8 +61,8 @@ class HyperboreaService : Service() {
                 startActivity(launchIntent)
             },
         )
+        orchestrator.startProbing()
         scope.launch {
-            orchestrator.probe()
             broadcastManager.start()
             updateManager.startAutoUpdate()
         }
@@ -93,6 +93,7 @@ class HyperboreaService : Service() {
     override fun onDestroy() {
         overlayManager.destroy()
         stateObserverJob?.cancel()
+        orchestrator.stopProbing()
         runBlocking {
             withTimeoutOrNull(STOP_TIMEOUT_MS) {
                 orchestrator.stop()

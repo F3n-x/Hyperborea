@@ -412,7 +412,9 @@ class OrchestratorTest {
     }
 
     @Test
-    fun `probe returns null on ecosystem prerequisite failure`() = runTest {
+    fun `probe stays Idle and does not fulfil when a prerequisite is not met`() = runTest {
+        // The prereq has a fulfill that would *fail* — probe must not call it (passive); it just
+        // leaves the orchestrator Idle. (start(), by contrast, would fulfil and reach Error.)
         val prereq = Prerequisite(
             id = "eco-fail",
             description = "test",
@@ -422,24 +424,25 @@ class OrchestratorTest {
         val env = TestEnv(this, ecosystemPrereqs = listOf(prereq))
         val result = env.orchestrator.probe()
         assertThat(result).isNull()
-        assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.Error::class.java)
+        assertThat(env.orchestrator.state.value).isEqualTo(OrchestratorState.Idle)
+        assertThat(env.hardware.identifyCallCount).isEqualTo(0)
     }
 
     @Test
-    fun `probe returns null when hardware cannot operate`() = runTest {
+    fun `probe stays Idle when hardware cannot operate`() = runTest {
         val env = TestEnv(this, hardwareCanOperate = false)
         val result = env.orchestrator.probe()
         assertThat(result).isNull()
-        assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.Error::class.java)
+        assertThat(env.orchestrator.state.value).isEqualTo(OrchestratorState.Idle)
     }
 
     @Test
-    fun `probe returns null on identify failure`() = runTest {
+    fun `probe stays Idle on identify failure`() = runTest {
         val env = TestEnv(this)
         env.hardware.identifyResult = null
         val result = env.orchestrator.probe()
         assertThat(result).isNull()
-        assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.Error::class.java)
+        assertThat(env.orchestrator.state.value).isEqualTo(OrchestratorState.Idle)
     }
 
     @Test
@@ -467,6 +470,36 @@ class OrchestratorTest {
         assertThat(env.orchestrator.state.value).isEqualTo(OrchestratorState.Idle)
         env.orchestrator.start()
         assertThat(env.orchestrator.state.value).isEqualTo(OrchestratorState.Running())
+    }
+
+    @Test
+    fun `startProbing probes once the hardware prerequisite becomes met, then stops`() = runTest {
+        var usbReady = false
+        val prereq = Prerequisite(id = "hw-usb", description = "test", isMet = { usbReady })
+        val env = TestEnv(this, hardwarePrereqs = listOf(prereq))
+        env.hardware.deviceInfo.value = null // not yet identified
+
+        fun republish() {
+            env.monitor.snapshot.value = env.monitor.snapshot.value
+                .copy(timestamp = env.monitor.snapshot.value.timestamp + 1)
+        }
+
+        env.orchestrator.startProbing()
+        advanceUntilIdle()
+        assertThat(env.hardware.identifyCallCount).isEqualTo(0) // prereq unmet → no probe
+
+        // USB attaches → probe → identify (the fake's identify() also populates deviceInfo, like the real adapter).
+        usbReady = true; republish(); advanceUntilIdle()
+        assertThat(env.hardware.identifyCallCount).isEqualTo(1)
+        assertThat(env.orchestrator.state.value).isEqualTo(OrchestratorState.Idle)
+        assertThat(env.broadcast1.lastDeviceInfo).isEqualTo(buildDeviceInfo())
+
+        // USB power-cycles (detach, re-attach) — must NOT re-probe now that it's identified.
+        usbReady = false; republish(); advanceUntilIdle()
+        usbReady = true;  republish(); advanceUntilIdle()
+        assertThat(env.hardware.identifyCallCount).isEqualTo(1)
+
+        env.orchestrator.stopProbing()
     }
 
     // --- Sensor tests ---
@@ -670,10 +703,16 @@ class OrchestratorTest {
         var shouldThrowOnSendCommand = false
         var reconnectResult: AdapterState? = null
         var identifyResult: DeviceInfo? = buildDeviceInfo()
+        var identifyCallCount = 0
 
         override fun canOperate(snapshot: SystemSnapshot) = operatable
 
-        override suspend fun identify(): DeviceInfo? = identifyResult
+        override suspend fun identify(): DeviceInfo? {
+            identifyCallCount++
+            // Mimic FitProAdapter.identify(): a successful identify populates deviceInfo.
+            identifyResult?.let { deviceInfo.value = it }
+            return identifyResult
+        }
 
         override suspend fun connect() {
             connectCalled = true

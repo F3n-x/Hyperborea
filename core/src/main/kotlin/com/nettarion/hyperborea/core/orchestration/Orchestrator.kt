@@ -25,8 +25,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -58,25 +60,38 @@ class Orchestrator(
     private var hardwareMonitorJob: Job? = null
     private var commandPipelineJob: Job? = null
     private var workoutModeMonitorJob: Job? = null
+    private var probeJob: Job? = null
 
     private val hardwareRetryPolicy = RetryPolicy(maxAttempts = 5, initialDelayMs = 2000, maxDelayMs = 15000)
     @Volatile
     private var isReconnecting = false
     private var preservedElapsedSeconds: Long = 0L
 
+    /**
+     * Best-effort, *passive* pre-identification of the hardware while idle. Only proceeds when every
+     * prerequisite is already satisfied — it never actively fulfils anything (no USB-permission
+     * dialog) and never surfaces the [OrchestratorState.Error] state: any failure (prereqs not met,
+     * identify failed, exception) just leaves the orchestrator in [OrchestratorState.Idle]. Active
+     * fulfilment + dialogs + errors are the responsibility of [start]. [startProbing] re-runs this
+     * each time the USB becomes accessible.
+     */
     suspend fun probe(): DeviceInfo? {
         mutex.withLock {
             if (_state.value !is OrchestratorState.Idle) return null
 
             try {
-                if (!ensureReady()) return null
+                if (!arePrerequisitesMet()) {
+                    logger.d(TAG, "Probe skipped — hardware not ready yet; staying idle")
+                    return null
+                }
 
                 _state.value = OrchestratorState.Preparing("Identifying hardware")
                 val deviceInfo = withTimeoutOrNull(PROBE_TIMEOUT_MS) {
                     hardwareAdapter.identify()
                 }
                 if (deviceInfo == null) {
-                    _state.value = OrchestratorState.Error("Failed to identify hardware")
+                    _state.value = OrchestratorState.Idle
+                    logger.d(TAG, "Probe: hardware did not identify; staying idle")
                     return null
                 }
 
@@ -86,11 +101,51 @@ class Orchestrator(
                 return deviceInfo
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                logger.e(TAG, "Probe failed", e)
-                _state.value = OrchestratorState.Error("Probe failed: ${e.message}", e)
+                logger.w(TAG, "Probe failed (will retry on start): ${e.message}")
+                _state.value = OrchestratorState.Idle
                 return null
             }
         }
+    }
+
+    /**
+     * Continuously pre-identifies the hardware while idle: re-runs [probe] each time the FitPro USB
+     * becomes accessible (which auto-grants on attach when the app is the foreground/HOME app), so
+     * the dashboard shows the device name without the user doing anything — and stops probing once
+     * it's identified. `distinctUntilChanged` + the `deviceInfo == null` guard keep the bike's
+     * ~20 s USB power-cycle from triggering a probe storm. Idempotent; the first `StateFlow`
+     * emission performs the initial probe.
+     */
+    fun startProbing() {
+        if (probeJob?.isActive == true) return
+        probeJob = scope.launch {
+            systemMonitor.snapshot
+                .map { snap -> hardwareAdapter.prerequisites.all { it.isMet(snap) } }
+                .distinctUntilChanged()
+                .collect { hwReady ->
+                    if (hwReady && _state.value is OrchestratorState.Idle && hardwareAdapter.deviceInfo.value == null) {
+                        probe()
+                    }
+                }
+        }
+    }
+
+    fun stopProbing() {
+        probeJob?.cancel()
+        probeJob = null
+    }
+
+    /**
+     * Read-only check used by [probe]: are all ecosystem + hardware prerequisites already satisfied
+     * and can the hardware operate? Refreshes the snapshot first so the ecosystem checks see fresh
+     * package/component state. Never calls a prerequisite's `fulfill` and never touches [_state].
+     */
+    private suspend fun arePrerequisitesMet(): Boolean {
+        refreshAndAwait()
+        val snapshot = systemMonitor.snapshot.value
+        return ecosystemManager.prerequisites.all { it.isMet(snapshot) } &&
+            hardwareAdapter.prerequisites.all { it.isMet(snapshot) } &&
+            hardwareAdapter.canOperate(snapshot)
     }
 
     suspend fun start() {
