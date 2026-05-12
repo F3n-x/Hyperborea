@@ -45,6 +45,13 @@
   `pm list packages -d` rather than tripping the `SecurityException` that
   `pm disable-user` throws on a system package in that state. All still works as
   the unprivileged `shell` user — no root required.
+- `deploy.{sh,ps1}`: wait ~15 s and `sync` after the `pm disable-user` calls
+  before rebooting. `PackageManagerService` debounces its write of
+  `package-restrictions.xml` by ~10 s, so a `pm disable-user` followed by an
+  immediate reboot (the previous behaviour) only ever changed in-memory state —
+  the disables never hit disk and iFit was back, and re-grabbing the USB device,
+  on the very next boot. (Verified on an S22i: reproduced the loss with an
+  immediate reboot, confirmed it persists with the wait.)
 - With the stock iFit launcher disabled, `MainActivity` now declares
   `category.HOME` and the deploy script points the HOME intent at it
   (`cmd package set-home-activity`), so a plain reboot lands on Hyperborea. If

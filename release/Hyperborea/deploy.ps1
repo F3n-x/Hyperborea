@@ -643,6 +643,15 @@ if ($ifitPackages.Count -eq 0) {
 # =========================================================================
 Write-Step 5 "Reboot and launch"
 
+# PackageManager debounces its write of package-restrictions.xml by ~10 s; the
+# `pm disable-user` calls above only update in-memory state until that timer
+# fires. Reboot inside that window and the disables are lost -- iFit comes back
+# on the next boot and re-grabs the USB device. Wait it out, then sync, then
+# reboot. (~15 s here is dwarfed by the reboot wait that follows.)
+Write-Info "Flushing package state..."
+Start-Sleep -Seconds 15
+Invoke-Adb shell sync 2>$null | Out-Null
+
 Write-Info "Rebooting..."
 $rebootStart = Get-Date
 Start-Timer "Waiting for device..."

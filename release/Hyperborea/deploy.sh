@@ -657,6 +657,15 @@ fi
 # =========================================================================
 step 5 "Reboot and launch"
 
+# PackageManager debounces its write of package-restrictions.xml by ~10 s; the
+# `pm disable-user` calls above only update in-memory state until that timer
+# fires. Reboot inside that window and the disables are lost — iFit comes back
+# on the next boot and re-grabs the USB device. Wait it out, then sync, then
+# reboot. (~15 s here is dwarfed by the reboot wait that follows.)
+info "Flushing package state..."
+sleep 15
+adb shell sync >/dev/null 2>&1 || true
+
 info "Rebooting..."
 REBOOT_START=$(date +%s)
 start_timer "Waiting for device..." "$REBOOT_START"
