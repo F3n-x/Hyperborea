@@ -3,61 +3,23 @@
 ## [Unreleased]
 
 ## [1.2.2] - 2026-05-12
-- The 1.2.1 fix for the "Bad notification for startForeground" crash-loop was
-  incomplete. It switched the foreground-service notification's icons from
-  `android.R.drawable.*` to app-owned **vector** drawables — but notification
-  icons are rendered by the *system* process, and on firmware that ships a
-  stripped `framework-res` (stock iFit consoles, e.g. NordicTrack S22i/X22i)
-  the system process can't inflate a `<vector>` either, so the notification was
-  still rejected and the process still killed ~2 s after launch, every launch.
-  The notification small icon is now a **PNG** (white-on-transparent, all five
-  density buckets); the two action icons reuse it (they aren't drawn by the
-  standard template on API 24+ anyway). Also removed the `try/catch` 1.2.1 put
-  around `startForeground()` — `RemoteServiceException` for a bad notification
-  is delivered asynchronously on the main-thread Handler, not thrown out of the
-  `startForeground()` call, so that catch never ran.
-- The first launch after install no longer fails with "Failed to identify
-  hardware" while the USB-permission dialog is still on screen. The
-  `usb-device-accessible` prerequisite now suspends until the user actually
-  answers the dialog (it was fire-and-forget, reporting success the instant the
-  dialog was *shown*). Because the app auto-launches on the console as soon as
-  the deploy finishes — when the user may still be at their computer — the
-  dialog gets a 10-minute budget (vs. the 10 s the orchestrator gives the
-  pm/am-call prerequisites); a denied dialog now surfaces "USB device permission
-  was not granted" instead of a misleading hardware-probe error.
-- `deploy.{sh,ps1}`: fix the post-install reboot hanging on "Waiting for
-  device…" for minutes over ADB-over-TCP. adb keeps the dead TCP transport
-  after the console reboots and blocks on it for the full socket timeout, so
-  the script now drops the stale transport with `adb disconnect` and lets the
-  existing reconnect loop reattach once adbd is back, instead of waiting for
-  the dead-socket probe to time out. (USB path unchanged.)
-- `deploy.{sh,ps1}`: disable iFit by enumerating the `com.ifit.*` packages
-  actually installed (`pm list packages com.ifit`) instead of a hardcoded list
-  — firmware revisions ship different sets of GlassOS service packages, and the
-  fixed list silently missed whatever a later update added — and disable **all**
-  of them, `com.ifit.launcher` included. Leaving the launcher enabled defeated
-  the point: it holds `RECEIVE_BOOT_COMPLETED`, so on every reboot it re-enabled
-  `com.ifit.eru` and `com.ifit.standalone`; ERU then disabled the launcher,
-  relaunched the standalone app, grabbed the USB device, and resumed pushing
-  iFit firmware updates (which overwrite `/system` and wipe the install). With
-  the launcher disabled too, nothing iFit fires on boot and the `pm disable-user`
-  state sticks. A launcher ERU had already hard-disabled is recognised via
-  `pm list packages -d` rather than tripping the `SecurityException` that
-  `pm disable-user` throws on a system package in that state. All still works as
-  the unprivileged `shell` user — no root required.
-- `deploy.{sh,ps1}`: wait ~15 s and `sync` after the `pm disable-user` calls
-  before rebooting. `PackageManagerService` debounces its write of
-  `package-restrictions.xml` by ~10 s, so a `pm disable-user` followed by an
-  immediate reboot (the previous behaviour) only ever changed in-memory state —
-  the disables never hit disk and iFit was back, and re-grabbing the USB device,
-  on the very next boot. (Verified on an S22i: reproduced the loss with an
-  immediate reboot, confirmed it persists with the wait.)
-- With the stock iFit launcher disabled, `MainActivity` now declares
-  `category.HOME` and the deploy script points the HOME intent at it
-  (`cmd package set-home-activity`), so a plain reboot lands on Hyperborea. If
-  Hyperborea is uninstalled the preference clears and the system falls back to
-  whatever other launcher is installed (e.g. `com.android.launcher3`).
-- `deploy.sh`: stop printing the "[1/5] Connect to device" header twice.
+- Fix the foreground-service notification crash-loop on stock iFit firmware: the
+  notification small/action icons are now raster PNGs (the system process can't
+  inflate a `<vector>` against a stripped `framework-res`), and the ineffective
+  `try/catch` around `startForeground()` is removed.
+- The `usb-device-accessible` prerequisite waits for the user to answer the
+  USB-permission dialog (10-minute budget) instead of reporting success the
+  moment it's shown; a denied dialog now surfaces a clear error.
+- Deployment disables **every** `com.ifit.*` package, the iFit launcher
+  included — leaving it enabled let it re-enable ERU on every boot, which then
+  re-grabbed the USB device and resumed pushing firmware updates — and waits
+  for PackageManager to persist the change before rebooting, so it survives.
+- `MainActivity` registers as a HOME activity and the deploy points the HOME
+  intent at it, so a plain reboot lands on Hyperborea (falls back to another
+  launcher if Hyperborea is uninstalled).
+- `deploy.{sh,ps1}`: enumerate iFit packages dynamically; fix the multi-minute
+  hang waiting for the console to come back after the post-install reboot over
+  ADB-over-TCP; stop double-printing the "Connect to device" header.
 
 ## [1.2.1] - 2026-05-11
 - Fix a crash on launch on stock iFit console firmware (observed on the
