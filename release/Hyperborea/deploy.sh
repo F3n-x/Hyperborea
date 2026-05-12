@@ -593,43 +593,63 @@ step 4 "Disable iFit"
 # Enumerate every iFit package actually present rather than hardcoding a list —
 # firmware revisions ship different sets of GlassOS service packages, and a
 # fixed list silently misses whatever a later update adds.
-# `com.ifit.launcher` is deliberately kept enabled so the device's home button
-# still has somewhere to land; it can't open the (disabled) workout apps, but
-# it remains a benign navigation anchor.
+#
+# ALL of them get disabled, com.ifit.launcher included. Leaving the launcher
+# enabled doesn't work: it has RECEIVE_BOOT_COMPLETED and on every boot it
+# re-enables com.ifit.eru and com.ifit.standalone (ERU then disables the
+# launcher, launches standalone, and resumes pushing firmware updates that wipe
+# the device). With the launcher disabled too, nothing iFit fires on boot and
+# the disables stick. Hyperborea registers itself as the home activity (step 5),
+# and com.android.launcher3 — if present — remains as the fallback.
 #
 # `pm disable-user --user 0` works as the unprivileged shell user; it doesn't
 # kill running processes (the reboot in step 5 handles that), but it stops them
-# from launching again.
+# from launching again. A package ERU previously hard-disabled (state "disabled"
+# rather than "disabled-user") still shows up under `pm list packages -d`, so
+# it's correctly counted as already-disabled instead of tripping the
+# SecurityException that `pm disable-user` throws on those.
 IFIT_PACKAGES=()
 while IFS= read -r pkg; do
     [ -n "$pkg" ] || continue
     IFIT_PACKAGES+=("$pkg")
 done < <(adb shell "pm list packages com.ifit" 2>/dev/null | tr -d '\r' \
-            | sed 's/^package://' | grep '^com\.ifit\.' | grep -Fvx 'com.ifit.launcher' | sort)
+            | sed 's/^package://' | grep '^com\.ifit\.' | sort)
 
 if [ ${#IFIT_PACKAGES[@]} -eq 0 ]; then
     warn "No com.ifit.* packages found on the device — nothing to disable."
 else
-    DISABLED_LIST=$(adb shell "pm list packages -d com.ifit" 2>/dev/null | tr -d '\r')
+    is_disabled() { adb shell "pm list packages -d com.ifit" 2>/dev/null | tr -d '\r' | grep -qFx "package:$1"; }
     DISABLED=0
     ALREADY=0
+    FAILED=0
     for pkg in "${IFIT_PACKAGES[@]}"; do
-        if printf '%s\n' "$DISABLED_LIST" | grep -qFx "package:$pkg"; then
+        if is_disabled "$pkg"; then
             ok "$pkg already disabled"
             ALREADY=$((ALREADY + 1))
             continue
         fi
-        # PackageManagerShellCommand prints "Package $pkg new state: disabled-user".
-        # Match the exact suffix to avoid colliding with `disable-until-used`.
-        if adb shell "pm disable-user --user 0 $pkg" 2>&1 | grep -q "new state: disabled-user"; then
+        # PackageManagerShellCommand prints "Package $pkg new state: disabled-user"
+        # on success; on a system pkg already in the hard-"disabled" state it
+        # throws a SecurityException instead — re-check before declaring failure.
+        out=$(adb shell "pm disable-user --user 0 $pkg" 2>&1 | tr -d '\r')
+        if printf '%s\n' "$out" | grep -q "new state: disabled-user"; then
             ok "Disabled $pkg"
             DISABLED=$((DISABLED + 1))
+        elif is_disabled "$pkg"; then
+            ok "$pkg already disabled"
+            ALREADY=$((ALREADY + 1))
         else
             warn "Could not disable $pkg"
+            [ "$VERBOSE" -eq 1 ] && printf '%s\n' "$out" | indent
+            FAILED=$((FAILED + 1))
         fi
     done
     echo ""
-    info "$DISABLED newly disabled, $ALREADY already disabled (${#IFIT_PACKAGES[@]} iFit package(s) found, launcher kept enabled)"
+    if [ "$FAILED" -eq 0 ]; then
+        info "$DISABLED newly disabled, $ALREADY already disabled (${#IFIT_PACKAGES[@]} iFit package(s) found)"
+    else
+        warn "$DISABLED newly disabled, $ALREADY already disabled, $FAILED could not be disabled (${#IFIT_PACKAGES[@]} iFit package(s) found)"
+    fi
 fi
 
 # =========================================================================
@@ -650,6 +670,19 @@ if [ -z "$PKG_PATH" ]; then
     die "Hyperborea is not installed after reboot — something went wrong."
 fi
 ok "Install verified: $PKG_PATH"
+
+# With every com.ifit.* package disabled, the stock iFit home screen is gone.
+# Point the HOME intent at Hyperborea so a plain reboot lands on it. (If
+# Hyperborea is later uninstalled this preference clears and the system falls
+# back to whatever other launcher exists, e.g. com.android.launcher3.)
+# `cmd package set-home-activity` exists from API 24; tolerate older shells.
+HOME_OUT=$(adb shell "cmd package set-home-activity com.nettarion.hyperborea/.MainActivity" 2>&1 | tr -d '\r')
+if printf '%s\n' "$HOME_OUT" | grep -qi "success"; then
+    ok "Set Hyperborea as the home screen"
+else
+    warn "Couldn't set Hyperborea as the home screen — pick it from the home chooser on the device"
+    [ "$VERBOSE" -eq 1 ] && printf '%s\n' "$HOME_OUT" | indent
+fi
 
 info "Launching Hyperborea..."
 adb shell am start -n com.nettarion.hyperborea/.MainActivity >/dev/null 2>&1 || true

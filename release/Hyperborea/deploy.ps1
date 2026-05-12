@@ -578,43 +578,64 @@ Write-Step 4 "Disable iFit"
 # Enumerate every iFit package actually present rather than hardcoding a list --
 # firmware revisions ship different sets of GlassOS service packages, and a
 # fixed list silently misses whatever a later update adds.
-# `com.ifit.launcher` is deliberately kept enabled so the device's home button
-# still has somewhere to land; it can't open the (disabled) workout apps, but
-# it remains a benign navigation anchor.
+#
+# ALL of them get disabled, com.ifit.launcher included. Leaving the launcher
+# enabled doesn't work: it has RECEIVE_BOOT_COMPLETED and on every boot it
+# re-enables com.ifit.eru and com.ifit.standalone (ERU then disables the
+# launcher, launches standalone, and resumes pushing firmware updates that wipe
+# the device). With the launcher disabled too, nothing iFit fires on boot and
+# the disables stick. Hyperborea registers itself as the home activity (step 5),
+# and com.android.launcher3 -- if present -- remains as the fallback.
 #
 # `pm disable-user --user 0` works as the unprivileged shell user; it doesn't
 # kill running processes (the reboot in step 5 handles that), but it stops them
-# from launching again.
+# from launching again. A package ERU previously hard-disabled (state "disabled"
+# rather than "disabled-user") still shows up under `pm list packages -d`, so
+# it's correctly counted as already-disabled instead of tripping the
+# SecurityException that `pm disable-user` throws on those.
 $ifitPackages = @(
     (Invoke-Adb shell "pm list packages com.ifit" 2>$null) -replace "`r","" |
         ForEach-Object { $_ -replace '^package:','' } |
-        Where-Object { $_ -match '^com\.ifit\.' -and $_ -ne 'com.ifit.launcher' } |
+        Where-Object { $_ -match '^com\.ifit\.' } |
         Sort-Object
 )
+
+function Test-PkgDisabled($pkg) {
+    $d = (Invoke-Adb shell "pm list packages -d com.ifit" 2>$null) -replace "`r",""
+    return ($d -contains "package:$pkg")
+}
 
 if ($ifitPackages.Count -eq 0) {
     Write-Warn "No com.ifit.* packages found on the device -- nothing to disable."
 } else {
-    $disabledPkgs = (Invoke-Adb shell "pm list packages -d com.ifit" 2>$null) -replace "`r",""
-    $disabled = 0; $already = 0
+    $disabled = 0; $already = 0; $failed = 0
     foreach ($pkg in $ifitPackages) {
-        if ($disabledPkgs -contains "package:$pkg") {
+        if (Test-PkgDisabled $pkg) {
             Write-Ok "$pkg already disabled"
             $already++
             continue
         }
+        # PackageManagerShellCommand prints "Package $pkg new state: disabled-user"
+        # on success; on a system pkg already in the hard-"disabled" state it
+        # throws a SecurityException instead -- re-check before declaring failure.
         $result = Invoke-Adb shell "pm disable-user --user 0 $pkg" 2>&1
-        # PackageManagerShellCommand prints "Package $pkg new state: disabled-user".
-        # Match the exact suffix to avoid colliding with `disable-until-used`.
         if ($result -match "new state: disabled-user") {
             Write-Ok "Disabled $pkg"
             $disabled++
+        } elseif (Test-PkgDisabled $pkg) {
+            Write-Ok "$pkg already disabled"
+            $already++
         } else {
             Write-Warn "Could not disable $pkg"
+            $failed++
         }
     }
     Write-Host ""
-    Write-Info "$disabled newly disabled, $already already disabled ($($ifitPackages.Count) iFit package(s) found, launcher kept enabled)"
+    if ($failed -eq 0) {
+        Write-Info "$disabled newly disabled, $already already disabled ($($ifitPackages.Count) iFit package(s) found)"
+    } else {
+        Write-Warn "$disabled newly disabled, $already already disabled, $failed could not be disabled ($($ifitPackages.Count) iFit package(s) found)"
+    }
 }
 
 # =========================================================================
@@ -635,6 +656,18 @@ if (-not $pkgPath) {
     Stop-WithError "Hyperborea is not installed after reboot -- something went wrong."
 }
 Write-Ok "Install verified: $pkgPath"
+
+# With every com.ifit.* package disabled, the stock iFit home screen is gone.
+# Point the HOME intent at Hyperborea so a plain reboot lands on it. (If
+# Hyperborea is later uninstalled this preference clears and the system falls
+# back to whatever other launcher exists, e.g. com.android.launcher3.)
+# `cmd package set-home-activity` exists from API 24; tolerate older shells.
+$homeOut = Invoke-Adb shell "cmd package set-home-activity com.nettarion.hyperborea/.MainActivity" 2>&1
+if ($homeOut -match "(?i)success") {
+    Write-Ok "Set Hyperborea as the home screen"
+} else {
+    Write-Warn "Couldn't set Hyperborea as the home screen -- pick it from the home chooser on the device"
+}
 
 Write-Info "Launching Hyperborea..."
 Invoke-Adb shell "am start -n com.nettarion.hyperborea/.MainActivity" 2>$null | Out-Null

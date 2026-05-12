@@ -32,10 +32,25 @@
   existing reconnect loop reattach once adbd is back, instead of waiting for
   the dead-socket probe to time out. (USB path unchanged.)
 - `deploy.{sh,ps1}`: disable iFit by enumerating the `com.ifit.*` packages
-  actually installed (`pm list packages com.ifit`, minus `com.ifit.launcher`)
-  instead of a hardcoded list — firmware revisions ship different sets of
-  GlassOS service packages, and the fixed list silently missed whatever a
-  later update added.
+  actually installed (`pm list packages com.ifit`) instead of a hardcoded list
+  — firmware revisions ship different sets of GlassOS service packages, and the
+  fixed list silently missed whatever a later update added — and disable **all**
+  of them, `com.ifit.launcher` included. Leaving the launcher enabled defeated
+  the point: it holds `RECEIVE_BOOT_COMPLETED`, so on every reboot it re-enabled
+  `com.ifit.eru` and `com.ifit.standalone`; ERU then disabled the launcher,
+  relaunched the standalone app, grabbed the USB device, and resumed pushing
+  iFit firmware updates (which overwrite `/system` and wipe the install). With
+  the launcher disabled too, nothing iFit fires on boot and the `pm disable-user`
+  state sticks. A launcher ERU had already hard-disabled is recognised via
+  `pm list packages -d` rather than tripping the `SecurityException` that
+  `pm disable-user` throws on a system package in that state. All still works as
+  the unprivileged `shell` user — no root required.
+- With the stock iFit launcher disabled, `MainActivity` now declares
+  `category.HOME` and the deploy script points the HOME intent at it
+  (`cmd package set-home-activity`), so a plain reboot lands on Hyperborea. If
+  Hyperborea is uninstalled the preference clears and the system falls back to
+  whatever other launcher is installed (e.g. `com.android.launcher3`).
+- `deploy.sh`: stop printing the "[1/5] Connect to device" header twice.
 
 ## [1.2.1] - 2026-05-11
 - Fix a crash on launch on stock iFit console firmware (observed on the

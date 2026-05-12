@@ -66,6 +66,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Eligible as the device's home screen. On an ICON console the stock
+                 home is com.ifit.launcher; the deploy script disables every
+                 com.ifit.* package (otherwise com.ifit.launcher re-enables ERU on
+                 boot — ERU then crash-loops on USB attach and pushes firmware
+                 updates that wipe the device) and points the HOME intent here via
+                 `cmd package set-home-activity`. If Hyperborea is uninstalled the
+                 preference clears and the system falls back to whatever other
+                 launcher is present (e.g. com.android.launcher3). -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <!-- Auto-launch on FitPro USB attach so Android offers the "always" checkbox.
                  Once accepted, USB permission persists across the device's ~20s connect cycle. -->
             <intent-filter>
