@@ -6,7 +6,9 @@ import android.bluetooth.le.ScanResult
 import com.nettarion.hyperborea.core.adapter.DiscoveredSensor
 import kotlinx.coroutines.channels.SendChannel
 
-@SuppressLint("MissingPermission") // API 25 system app — BLE permissions are install-time granted
+// BLUETOOTH_SCAN (API 31+) / ACCESS_FINE_LOCATION (API <=30) is checked in HrmAdapter before the
+// scan is started, so the scan results delivered here always arrive with the permission held.
+@SuppressLint("MissingPermission")
 internal class HrmScanCallback(
     private val channel: SendChannel<DiscoveredSensor>,
 ) : ScanCallback() {

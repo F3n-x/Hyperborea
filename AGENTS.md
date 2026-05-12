@@ -8,7 +8,7 @@ Hyperborea is an Android app that bridges ICON Fitness equipment (NordicTrack, P
 
 It runs on the equipment's own Android console. It is an independent project, not affiliated with ICON Health & Fitness / iFit / Zwift — see [README.md](README.md) for the full disclaimer.
 
-- **Primary target device**: NordicTrack S22i console — Android 7.1.2 (API 25), 1920x1080 landscape, 22"
+- **Primary target device**: NordicTrack S22i console, 1920x1080 landscape, 22" — but ICON consoles (bikes, treadmills, ellipticals) ship a **wide range of Android versions** in the field: the oldest supported is Android 5.1 (`minSdk = 22`), 6.x and 7.1.2 are common, and Android 9+ (API 28+) is out there too. **The app must behave correctly across its whole declared range, `minSdk = 22` … `compileSdk`/`targetSdk = 36`** — do not assume any single Android version in code, manifests, or comments (see "API Level Constraints" below).
 - **Hardware compatibility**: Any ICON Fitness device using the FitPro protocol over USB (vendor ID `0x213C`) — bikes, treadmills, ellipticals
 - **Stack**: Kotlin, Jetpack Compose + Material3, Hilt (KSP), Gradle — check `gradle/libs.versions.toml` and the `build.gradle.kts` files for current versions
 
@@ -66,7 +66,7 @@ When modifying or extending the codebase, investigate the existing code to under
 - **Read/write split for system interaction.** Passive observation (monitoring) and active mutation (control) are separate interfaces with different permissions and failure modes.
 - **Sealed types for exhaustive handling.** Commands and states use sealed interfaces so the compiler enforces exhaustive `when` handling.
 - **Composition root in `:app`.** Only `:app` knows about concrete implementations. Feature modules never import each other. DI modules use `@Binds` for interface binding.
-- **Logging convention.** Use a `TAG` companion constant per class. Inject the logger interface from `:core`. Logcat tags are prefixed `Hyperborea.`. Filter with `adb logcat -d | grep "Hyperborea\."` — the `-s` flag requires exact tag names (no wildcards on API 25).
+- **Logging convention.** Use a `TAG` companion constant per class. Inject the logger interface from `:core`. Logcat tags are prefixed `Hyperborea.`. Filter with `adb logcat -d | grep "Hyperborea\."` — the `-s` flag requires exact tag names (no tag wildcards). For diagnosing crashes, capture `adb logcat -d -b all -v threadtime` (the `crash`/`system` buffers carry the OS-side reason, e.g. `NotificationService: No Channel found …`, which a `Hyperborea.`-only filter would miss).
 
 ### Data Flow
 
@@ -85,11 +85,32 @@ Zwift/fitness app sends resistance/incline target
 
 ## API Level Constraints
 
-Target is API 25 (Android 7.1.2). Key restrictions:
-- Use `startService()` + `startForeground()` — **not** `startForegroundService()` (API 26+)
-- No dynamic color (Material You requires API 31+)
-- Use `@Suppress("DEPRECATION")` for deprecated pre-API 26 methods as needed
-- BLE permissions: `BLUETOOTH` + `BLUETOOTH_ADMIN` + `ACCESS_FINE_LOCATION` (pre-API 31 model)
+`minSdk = 22` (Android 5.1) … `compileSdk`/`targetSdk = 36`. The app runs on consoles anywhere in
+that range, so every Android-version-sensitive API must be handled across it — use
+`Build.VERSION.SDK_INT` guards (the codebase prefers raw framework APIs + guards over `*Compat`
+wrappers; `androidx.core` is only available transitively). Notes:
+
+- **Foreground service**: starts from background contexts (boot receiver, `Application.onCreate()`)
+  go through `Context.startHyperboreaService()` → `startForegroundService()` on API 26+. The
+  service creates a `NotificationChannel` (API 26+) before `startForeground`, builds the
+  notification with `Notification.Builder(ctx, CHANNEL_ID)` on API 26+, and passes
+  `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` to the 3-arg `startForeground` on API 29+. The
+  manifest declares `foregroundServiceType="connectedDevice"` (mandatory on API 34+),
+  `FOREGROUND_SERVICE_CONNECTED_DEVICE`, `CHANGE_NETWORK_STATE` (authorises that FGS type), and
+  `POST_NOTIFICATIONS` (API 33+ runtime perm, requested in `MainActivity`).
+- **No Direct Boot**: nothing is `directBootAware` — the Compose/Hilt/Room/SharedPreferences stack
+  isn't safe to run while the user is locked. A "UI before unlock" feature would need a separate
+  direct-boot-aware activity using `createDeviceProtectedStorageContext()`.
+- **Bluetooth**: dual permission model. API 31+ runtime perms `BLUETOOTH_SCAN`/`ADVERTISE`/`CONNECT`
+  (requested in `MainActivity`); legacy `BLUETOOTH`/`BLUETOOTH_ADMIN`/`ACCESS_FINE_LOCATION` capped
+  at `maxSdkVersion="30"`; `BLUETOOTH_SCAN` is `neverForLocation`. BLE code (`FtmsBleServer`,
+  `HrmAdapter`, `AndroidSystemMonitor`) checks the relevant perm and degrades gracefully if denied.
+- **Scoped storage**: never write to public `Downloads` — `WRITE_EXTERNAL_STORAGE` is ignored for
+  `targetSdk ≥ 30` and `getExternalStoragePublicDirectory()` is unwritable from API 29+. Exports use
+  `context.getExternalFilesDir(...)` (no permission, all API levels).
+- No dynamic color (Material You requires API 31+); the runtime works on all versions but the
+  console theme stays static.
+- Use `@Suppress("DEPRECATION")` for deprecated-but-still-needed pre-API-26 APIs as needed.
 
 ## Configuration & Secrets
 

@@ -9,10 +9,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             Log.i(TAG, "Boot completed — starting service")
-            val serviceIntent = Intent(context, HyperboreaService::class.java).apply {
-                action = HyperboreaService.ACTION_BOOT
-            }
-            context.startService(serviceIntent)
+            context.startHyperboreaService(HyperboreaService.ACTION_BOOT)
         } else {
             Log.w(TAG, "Unexpected action: ${intent.action}")
         }

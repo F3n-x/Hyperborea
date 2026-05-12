@@ -1,5 +1,7 @@
 package com.nettarion.hyperborea.platform
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
@@ -15,6 +17,7 @@ import android.content.pm.ProviderInfo
 import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.provider.Settings
 import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.system.ComponentState
@@ -97,9 +100,16 @@ class AndroidSystemMonitor @Inject constructor(
     private fun captureStatus(): SystemStatus {
         val pm = context.packageManager
 
-        // Bluetooth
+        // Bluetooth — BluetoothAdapter.isEnabled and the advertiser query require BLUETOOTH_CONNECT
+        // on API 31+; report "unavailable" rather than throw SecurityException if it isn't granted.
         val btAdapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-        val bleEnabled = pm.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) &&
+        val btConnectGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        val bleEnabled = btConnectGranted &&
+            pm.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) &&
             btAdapter?.isEnabled == true
         val bleAdvertisingSupported = bleEnabled &&
             (btAdapter.isMultipleAdvertisementSupported ||
@@ -109,8 +119,8 @@ class AndroidSystemMonitor @Inject constructor(
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val networkConnected = connectivityManager?.activeNetworkInfo?.isConnected == true
 
-        // WiFi + IP
-        val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        // WiFi + IP — look WIFI_SERVICE up on the application context (avoids the pre-N leak).
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val wifiEnabled = pm.hasSystemFeature(PackageManager.FEATURE_WIFI) &&
             wifiManager?.isWifiEnabled == true
         val wifiIp = if (wifiEnabled) {
@@ -225,6 +235,11 @@ class AndroidSystemMonitor @Inject constructor(
         } ?: emptyList()
     }
 
+    // QueryPermissionsNeeded: this is a diagnostic snapshot — on API 30+ it sees this app, system
+    // packages, and the com.ifit.* packages listed in the manifest <queries> block, which is
+    // exactly what the ecosystem checks need; full visibility (QUERY_ALL_PACKAGES) is neither
+    // wanted nor allowed here.
+    @SuppressLint("QueryPermissionsNeeded")
     @Suppress("DEPRECATION")
     private fun capturePackages(): List<InstalledPackage> {
         val flags = PackageManager.GET_ACTIVITIES or
@@ -235,6 +250,7 @@ class AndroidSystemMonitor @Inject constructor(
         return packages.map { it.toInstalledPackage() }
     }
 
+    @SuppressLint("QueryPermissionsNeeded") // see capturePackages()
     @Suppress("DEPRECATION")
     private fun captureComponents(): List<DeclaredComponent> {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager

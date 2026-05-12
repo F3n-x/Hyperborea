@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Package visibility (API 30+, enforced when targetSdk >= 30).
          Without this, getInstalledPackages() returns only our own package and
@@ -16,19 +17,27 @@
         <package android:name="com.ifit.launcher" />
     </queries>
 
-    <!-- BLE peripheral mode (pre-API 31 permission model) -->
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Bluetooth: dual permission model. API 31+ uses the runtime BLUETOOTH_* perms
+         (requested in MainActivity); API <=30 uses the legacy ones. We scan only by the
+         Heart Rate service UUID and never derive location, so BLUETOOTH_SCAN is flagged
+         neverForLocation and ACCESS_FINE/COARSE_LOCATION is capped at API 30. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
 
-    <!-- WiFi broadcast -->
+    <!-- WiFi broadcast. CHANGE_NETWORK_STATE also authorises the connectedDevice
+         foreground-service type (see the <service> declaration below). -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-
-    <!-- External storage for log export (auto-granted on API 25) -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
     <!-- USB host -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
@@ -37,8 +46,12 @@
          OverlayManager degrades gracefully when not granted. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Foreground service -->
+    <!-- Foreground service. connectedDevice type needs its own permission on API 34+;
+         POST_NOTIFICATIONS is a runtime perm on API 33+ (requested in MainActivity),
+         needed so the service notification's updates aren't dropped. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Auto-start on boot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -52,16 +65,19 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Hyperborea">
+        android:theme="@style/Theme.Hyperborea"
+        tools:targetApi="n">
+        <!-- screenOrientation is intentional: the console is a fixed-landscape kiosk. -->
         <activity
             android:name=".MainActivity"
-            android:directBootAware="true"
             android:exported="true"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.Hyperborea">
+            android:theme="@style/Theme.Hyperborea"
+            tools:ignore="DiscouragedApi">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -91,7 +107,8 @@
 
         <service
             android:name=".HyperboreaService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -1,5 +1,6 @@
 package com.nettarion.hyperborea.platform.update
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -68,6 +69,9 @@ class AppInstaller @Inject constructor(
         }
     }
 
+    // InlinedApi: only ever invoked when SDK_INT >= O (the canRequestPackageInstalls() gate in
+    // install()); the inlined ACTION_MANAGE_UNKNOWN_APP_SOURCES string is harmless on older builds.
+    @SuppressLint("InlinedApi")
     private fun launchUnknownSourcesSettings(): InstallResult {
         logger.w(TAG, "Install Unknown Apps not granted; routing user to Settings")
         return try {

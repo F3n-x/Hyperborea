@@ -1,10 +1,10 @@
 package com.nettarion.hyperborea.ui.dashboard
 
 import android.content.Context
-import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nettarion.hyperborea.HyperboreaService
+import com.nettarion.hyperborea.startHyperboreaService
 import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.adapter.AdapterState
 import com.nettarion.hyperborea.core.adapter.BroadcastAdapter
@@ -101,19 +101,13 @@ class DashboardViewModel @Inject constructor(
 
     fun startBroadcasting() {
         logger.i(TAG, "User action: start broadcasting")
-        val intent = Intent(context, HyperboreaService::class.java).apply {
-            action = HyperboreaService.ACTION_ACTIVATE
-        }
-        context.startService(intent)
+        context.startHyperboreaService(HyperboreaService.ACTION_ACTIVATE)
     }
 
     fun stopBroadcasting(save: Boolean = true) {
         logger.i(TAG, "User action: stop broadcasting (save=$save)")
         val action = if (save) HyperboreaService.ACTION_DEACTIVATE else HyperboreaService.ACTION_DEACTIVATE_DISCARD
-        val intent = Intent(context, HyperboreaService::class.java).apply {
-            this.action = action
-        }
-        context.startService(intent)
+        context.startHyperboreaService(action)
     }
 
     /** Returns elapsed seconds from the current exercise data, or 0 if not available. */
@@ -122,18 +116,12 @@ class DashboardViewModel @Inject constructor(
 
     fun pauseBroadcasting() {
         logger.i(TAG, "User action: pause broadcasting")
-        val intent = Intent(context, HyperboreaService::class.java).apply {
-            action = HyperboreaService.ACTION_PAUSE
-        }
-        context.startService(intent)
+        context.startHyperboreaService(HyperboreaService.ACTION_PAUSE)
     }
 
     fun resumeBroadcasting() {
         logger.i(TAG, "User action: resume broadcasting")
-        val intent = Intent(context, HyperboreaService::class.java).apply {
-            action = HyperboreaService.ACTION_RESUME
-        }
-        context.startService(intent)
+        context.startHyperboreaService(HyperboreaService.ACTION_RESUME)
     }
 
     fun toggleBroadcast(id: BroadcastId, enabled: Boolean) {

@@ -276,10 +276,12 @@ class FtmsBleServer(
     }
 
     private fun requireBluetoothPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-        ) {
-            throw SecurityException("BLUETOOTH_CONNECT permission not granted")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        // start() opens a GATT server (BLUETOOTH_CONNECT) and advertises (BLUETOOTH_ADVERTISE).
+        val missing = listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+            .filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            throw SecurityException("Bluetooth permissions not granted: $missing")
         }
     }
 

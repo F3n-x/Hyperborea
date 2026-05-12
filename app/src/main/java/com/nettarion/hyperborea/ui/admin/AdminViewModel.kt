@@ -128,28 +128,15 @@ class AdminViewModel @Inject constructor(
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val filename = "${prefix}_$timestamp.log"
 
-        // Save to Downloads — accessible via adb pull /sdcard/Download/
-        @Suppress("DEPRECATION")
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        downloadsDir.mkdirs()
-        val file = File(downloadsDir, filename)
+        // App-specific external dir: no storage permission needed on any API level and unaffected
+        // by scoped storage. Retrieve with: adb pull /sdcard/Android/data/<pkg>/files/Download/<file>
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+        val file = File(dir, filename)
         try {
+            dir.mkdirs()
             file.writeText(content)
         } catch (e: Exception) {
-            logger.e(TAG, "Failed to write to Downloads", e)
-            // Fall back to app-private external files dir
-            val fallbackDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            if (fallbackDir != null) {
-                try {
-                    fallbackDir.mkdirs()
-                    val fallbackFile = File(fallbackDir, filename)
-                    fallbackFile.writeText(content)
-                    _exportResult.value = ExportResult(fallbackFile.absolutePath)
-                    return
-                } catch (e2: Exception) {
-                    logger.e(TAG, "Fallback write also failed", e2)
-                }
-            }
+            logger.e(TAG, "Failed to write logs", e)
             _exportResult.value = ExportResult(null, error = "Failed to save: ${e.message}")
             return
         }

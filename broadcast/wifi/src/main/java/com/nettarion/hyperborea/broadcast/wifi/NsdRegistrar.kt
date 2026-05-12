@@ -1,5 +1,6 @@
 package com.nettarion.hyperborea.broadcast.wifi
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -70,6 +71,10 @@ class NsdRegistrar(
         nsdManager = null
     }
 
+    // HardwareIds: ANDROID_ID is only the fallback when wlan0's real MAC is unavailable, and it's
+    // used solely to derive a stable mDNS service identifier for the fitness protocol — not for
+    // tracking/advertising. No alternative identifier fits the role.
+    @SuppressLint("HardwareIds")
     private fun getWifiMacAddress(): ByteArray {
         try {
             val iface = NetworkInterface.getByName("wlan0")

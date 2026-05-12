@@ -15,7 +15,8 @@ import android.widget.TextView
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.orchestration.OrchestratorState
 
-@SuppressLint("ViewConstructor")
+// SetTextI18n: this overlay is a fixed-orientation English-only kiosk HUD, never localised.
+@SuppressLint("ViewConstructor", "SetTextI18n")
 class OverlayBarView(
     context: Context,
     private val layoutParams: WindowManager.LayoutParams,

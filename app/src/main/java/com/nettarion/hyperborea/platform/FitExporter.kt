@@ -18,32 +18,18 @@ class FitExporter(
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(startedAtMs))
         val filename = "hyperborea_$timestamp.fit"
 
-        @Suppress("DEPRECATION")
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        downloadsDir.mkdirs()
-        val file = File(downloadsDir, filename)
-
+        // App-specific external dir: no storage permission needed on any API level and unaffected
+        // by scoped storage. Retrieve with: adb pull /sdcard/Android/data/<pkg>/files/Download/<file>
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
         return try {
+            dir.mkdirs()
+            val file = File(dir, filename)
             file.writeBytes(fitBytes)
             logger.i(TAG, "FIT exported to ${file.absolutePath}")
             ExportResult(file.absolutePath)
         } catch (e: Exception) {
-            logger.e(TAG, "Failed to write FIT to Downloads", e)
-            val fallbackDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            if (fallbackDir != null) {
-                try {
-                    fallbackDir.mkdirs()
-                    val fallbackFile = File(fallbackDir, filename)
-                    fallbackFile.writeBytes(fitBytes)
-                    logger.i(TAG, "FIT exported to ${fallbackFile.absolutePath} (fallback)")
-                    ExportResult(fallbackFile.absolutePath)
-                } catch (e2: Exception) {
-                    logger.e(TAG, "Fallback write also failed", e2)
-                    ExportResult(null, error = "Failed to save: ${e.message}")
-                }
-            } else {
-                ExportResult(null, error = "Failed to save: ${e.message}")
-            }
+            logger.e(TAG, "Failed to write FIT file", e)
+            ExportResult(null, error = "Failed to save: ${e.message}")
         }
     }
 

@@ -1,11 +1,14 @@
 package com.nettarion.hyperborea
 
-import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.adapter.HardwareAdapter
@@ -37,11 +40,10 @@ class HyperboreaService : Service() {
     private var stateObserverJob: Job? = null
     private lateinit var overlayManager: OverlayManager
 
-    @SuppressLint("ForegroundServiceType") // API 25 target — no foregroundServiceType needed
     override fun onCreate() {
         super.onCreate()
-        @Suppress("DEPRECATION")
-        startForeground(NOTIFICATION_ID, buildNotification("Starting…"))
+        ensureNotificationChannel()
+        startForegroundCompat(buildNotification("Starting…"))
         overlayManager = OverlayManager(
             context = this,
             orchestrator = orchestrator,
@@ -158,8 +160,6 @@ class HyperboreaService : Service() {
         }
     }
 
-    @Suppress("DEPRECATION")
-    @SuppressLint("NotificationPermission") // API 25 target — POST_NOTIFICATIONS not required
     private fun updateNotification(state: OrchestratorState) {
         val text = when (state) {
             is OrchestratorState.Idle -> "Idle"
@@ -169,8 +169,35 @@ class HyperboreaService : Service() {
             is OrchestratorState.Error -> "Error: ${state.message}"
             is OrchestratorState.Stopping -> "Stopping…"
         }
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    /**
+     * `connectedDevice` because we own a USB↔BLE/WiFi bridge; the type is mandatory on API 34+
+     * (`MissingForegroundServiceTypeException` otherwise) and the manifest declares
+     * `FOREGROUND_SERVICE_CONNECTED_DEVICE` + `CHANGE_NETWORK_STATE` to authorise it. The 3-arg
+     * `startForeground` overload is API 29+.
+     */
+    private fun startForegroundCompat(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    /** Notification channels are required when posting on API 26+; a no-op below that. */
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Hyperborea", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Keeps the bridge to Zwift running"
+                setShowBadge(false)
+            },
+        )
     }
 
     @Suppress("DEPRECATION")
@@ -200,9 +227,14 @@ class HyperboreaService : Service() {
         // stock iFit console firmware ships a stripped framework-res whose system process
         // can't inflate a <vector>, and an icon that fails to load makes the system reject
         // the whole notification ("Bad notification for startForeground") and kill us.
-        // The two action icons aren't drawn by the standard template on API 24+, so they
+        // The two action icons aren't drawn by the standard notification template, so they
         // reuse the status icon rather than carrying their own raster sets.
-        return Notification.Builder(this)
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            Notification.Builder(this)
+        }
+        return builder
             .setSmallIcon(R.drawable.ic_stat_hyperborea)
             .setContentTitle("Hyperborea")
             .setContentText(contentText)
@@ -232,6 +264,7 @@ class HyperboreaService : Service() {
         const val ACTION_SHUTDOWN = "com.nettarion.hyperborea.action.SHUTDOWN"
 
         private const val NOTIFICATION_ID = 1
+        private const val CHANNEL_ID = "hyperborea_service"
         private const val STOP_TIMEOUT_MS = 3000L
         private const val TAG = "Service"
     }

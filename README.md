@@ -8,8 +8,10 @@ WiFi TCP stream — so apps like Zwift see a normal smart trainer. It also forwa
 resistance/incline targets back to the equipment for ERG-style control.
 
 It runs on the equipment's own Android console (the primary target is the NordicTrack S22i, a 22"
-landscape console running Android 7.1.2 / API 25) and works with any ICON Fitness device that
-speaks the FitPro protocol over USB (USB vendor ID `0x213C`) — bikes, treadmills, and ellipticals.
+landscape console) and works with any ICON Fitness device that speaks the FitPro protocol over USB
+(USB vendor ID `0x213C`) — bikes, treadmills, and ellipticals. These consoles ship a range of
+Android versions in the field — anything from Android 5.1 to Android 9+ — and Hyperborea supports
+the whole range.
 
 > [!IMPORTANT]
 > **Disclaimer.** This is an independent project. It is not affiliated with, authorized by, or

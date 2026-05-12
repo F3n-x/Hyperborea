@@ -1,5 +1,6 @@
 package com.nettarion.hyperborea.sensor.hrm
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothGatt
@@ -7,6 +8,8 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.ParcelUuid
 import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.RetryPolicy
@@ -32,7 +35,10 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
-@SuppressLint("MissingPermission") // API 25 system app — BLE permissions are install-time granted
+// BLE permissions are declared in the app manifest (API 31+: BLUETOOTH_SCAN/CONNECT; API <=30:
+// BLUETOOTH/BLUETOOTH_ADMIN + ACCESS_FINE_LOCATION) and checked before scanning (see
+// hasScanPermission); GATT connect only follows a successful scan, so the relevant perm is held.
+@SuppressLint("MissingPermission")
 @Singleton
 class HrmAdapter @Inject constructor(
     private val context: Context,
@@ -60,6 +66,12 @@ class HrmAdapter @Inject constructor(
         snapshot.status.isBluetoothLeEnabled
 
     override suspend fun startScan(): Flow<DiscoveredSensor> = callbackFlow {
+        if (!hasScanPermission()) {
+            logger.w(TAG, "HR sensor scan skipped: Bluetooth scan permission not granted")
+            close(SecurityException("Bluetooth scan permission not granted"))
+            return@callbackFlow
+        }
+
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter
         val scanner = adapter?.bluetoothLeScanner
@@ -186,6 +198,14 @@ class HrmAdapter @Inject constructor(
         gatt?.disconnect()
         gatt?.close()
         gatt = null
+    }
+
+    private fun hasScanPermission(): Boolean = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
+            context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        else -> true
     }
 
     private companion object {

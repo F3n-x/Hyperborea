@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ replacement for android:fullBackupContent (which now only governs cloud backup).
+  Mirrors backup_rules.xml: back up everything except the cached license file, for both cloud
+  backup and device-to-device transfer.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="hyperborea_license.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="hyperborea_license.xml" />
+    </device-transfer>
+</data-extraction-rules>

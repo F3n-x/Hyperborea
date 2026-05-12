@@ -10,7 +10,9 @@ import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.adapter.SensorReading
 import java.util.UUID
 
-@SuppressLint("MissingPermission") // API 25 system app — BLE permissions are install-time granted
+// BLUETOOTH_CONNECT (API 31+) / BLUETOOTH (API <=30) is held by the time we get here: a GATT
+// connection only starts after a successful scan, which already requires the scan permission.
+@SuppressLint("MissingPermission")
 internal class HrmGattCallback(
     private val logger: AppLogger,
     private val onConnectionStateChange: (connected: Boolean) -> Unit,

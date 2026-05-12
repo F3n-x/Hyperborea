@@ -1,11 +1,17 @@
 package com.nettarion.hyperborea
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
@@ -33,8 +39,19 @@ class MainActivity : ComponentActivity() {
 
     private val pendingStopDialog = mutableStateOf(false)
 
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            val denied = results.filterValues { !it }.keys
+            if (denied.isNotEmpty()) {
+                Log.w(TAG, "Permissions not granted: $denied — affected features will degrade")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            requestRuntimePermissions()
+        }
         handleStopDialogIntent(intent)
         enableEdgeToEdge()
         setContent {
@@ -54,6 +71,38 @@ class MainActivity : ComponentActivity() {
             pendingStopDialog.value = true
             intent.removeExtra("show_stop_dialog")
         }
+    }
+
+    /**
+     * Best-effort runtime-permission request on first launch. On the supported deploy path
+     * (`deploy.sh` uses `adb install -g`) these are already granted, so no dialog appears;
+     * this is the safety net for other install paths. Anything denied just degrades a feature
+     * — BLE FTMS, HRM scanning, or live notification updates — handled at each use site.
+     */
+    private fun requestRuntimePermissions() {
+        val needed = requiredRuntimePermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
+    }
+
+    private fun requiredRuntimePermissions(): List<String> = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ Bluetooth model: GATT server + advertising (FTMS) and scanning (HRM).
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            add(Manifest.permission.BLUETOOTH_SCAN)
+        } else {
+            // API 23–30: BLE scanning (HRM discovery only) needs location at runtime.
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private companion object {
+        const val TAG = "Hyperborea.MainActivity"
     }
 }
 
