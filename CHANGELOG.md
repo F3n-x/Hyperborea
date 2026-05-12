@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-05-12
+- `deploy.{sh,ps1}`: hand the home screen to the device's own Android launcher (`com.android.launcher3`) instead of making Hyperborea the home app — pressing Home goes to the normal Android launcher, and Hyperborea keeps running in the background (its `BootReceiver` restarts the foreground service on boot, so it doesn't need to be the home app). Falls back to Hyperborea-as-home only on consoles that ship no other launcher. To switch a console already deployed with an older build: `adb shell cmd package set-home-activity com.android.launcher3/.Launcher`.
+
 ## [1.2.3] - 2026-05-12
 - **Fix the foreground-service crash-loop on consoles running Android 8.0+ (ICON consoles ship anything from Android 5.1 to 9+, not just the 7.1.2 the older code assumed):** the service notification now creates a `NotificationChannel` on API 26+ (a channel-less notification is rejected → `RemoteServiceException: Bad notification for startForeground` → crash every ~6 s), declares `android:foregroundServiceType="connectedDevice"` (mandatory on API 34+), `POST_NOTIFICATIONS` (API 33+), and is started via `startForegroundService()` from background contexts (boot receiver / `Application.onCreate()`) so it doesn't `IllegalStateException` on API 26+.
 - **Fix the first-boot crash on file-based-encryption devices:** `MainActivity` is no longer `directBootAware`, so the OS doesn't launch it (and the Hilt graph → `SharedPreferences`) before the user is unlocked — that was throwing `IllegalStateException: credential encrypted storage are not available until after user is unlocked`.

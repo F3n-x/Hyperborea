@@ -729,16 +729,34 @@ if (-not $pkgPath) {
 }
 Write-Ok "Install verified: $pkgPath"
 
-# With every com.ifit.* package disabled, the stock iFit home screen is gone.
-# Point the HOME intent at Hyperborea so a plain reboot lands on it. (If
-# Hyperborea is later uninstalled this preference clears and the system falls
-# back to whatever other launcher exists, e.g. com.android.launcher3.)
-# `cmd package set-home-activity` exists from API 24; tolerate older shells.
-$homeOut = Invoke-Adb shell "cmd package set-home-activity com.nettarion.hyperborea/.MainActivity" 2>&1
-if ($homeOut -match "(?i)success") {
-    Write-Ok "Set Hyperborea as the home screen"
+# Every com.ifit.* package is disabled now, so the stock iFit home screen is
+# gone. Hand the HOME intent to the device's own AOSP launcher
+# (com.android.launcher3) -- that's what the user lands on after a plain reboot.
+# Hyperborea isn't the home app; it keeps running headless as a foreground
+# service (BootReceiver restarts it on boot) and is reachable from the launcher's
+# app list. Only if the console ships no other launcher do we fall back to making
+# Hyperborea itself the home activity, so it's never left with no home screen.
+# `cmd package set-home-activity`/`query-activities` need `cmd` (API 24+); on
+# older shells both fail and the system shows its home chooser on first Home press.
+function Set-HomeActivity($component) {
+    return ((Invoke-Adb shell "cmd package set-home-activity $component" 2>&1) -match "(?i)success")
+}
+
+# First HOME-category activity that isn't iFit's, isn't Hyperborea, and isn't one
+# of the bare system fallbacks (settings FallbackHome / internal SystemUserHome).
+$homeTarget = (Invoke-Adb shell "cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME" 2>$null) -replace "`r","" |
+    Select-String -Pattern '[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' -AllMatches |
+    ForEach-Object { $_.Matches.Value } |
+    Where-Object { $_ -notmatch '^(com\.ifit\.|com\.nettarion\.hyperborea/|com\.android\.settings/|android/)' } |
+    Select-Object -First 1
+
+if ($homeTarget -and (Set-HomeActivity $homeTarget)) {
+    Write-Ok "Home screen: $homeTarget"
+    Write-Info "Hyperborea runs in the background and auto-starts on boot -- open it from the launcher to see the dashboard."
+} elseif (Set-HomeActivity "com.nettarion.hyperborea/.MainActivity") {
+    Write-Warn "No other launcher on this console -- set Hyperborea as the home screen"
 } else {
-    Write-Warn "Couldn't set Hyperborea as the home screen -- pick it from the home chooser on the device"
+    Write-Warn "Couldn't set a home screen -- pick one from the home chooser on the device"
 }
 
 Write-Info "Launching Hyperborea..."

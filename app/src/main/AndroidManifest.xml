@@ -82,14 +82,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Eligible as the device's home screen. On an ICON console the stock
-                 home is com.ifit.launcher; the deploy script disables every
-                 com.ifit.* package (otherwise com.ifit.launcher re-enables ERU on
-                 boot — ERU then crash-loops on USB attach and pushes firmware
-                 updates that wipe the device) and points the HOME intent here via
-                 `cmd package set-home-activity`. If Hyperborea is uninstalled the
-                 preference clears and the system falls back to whatever other
-                 launcher is present (e.g. com.android.launcher3). -->
+            <!-- Eligible as the device's home screen, but only as a last resort.
+                 On an ICON console the stock home is com.ifit.launcher; the deploy
+                 script disables every com.ifit.* package (otherwise com.ifit.launcher
+                 re-enables ERU on boot — ERU then crash-loops on USB attach and pushes
+                 firmware updates that wipe the device), then hands the HOME intent to
+                 the device's own AOSP launcher (com.android.launcher3) via
+                 `cmd package set-home-activity` — falling back to this activity only if
+                 the console ships no other launcher. Hyperborea runs headless as a
+                 foreground service either way (BootReceiver restarts it on boot), so it
+                 doesn't need to be the home app. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />

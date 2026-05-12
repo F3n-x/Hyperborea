@@ -741,17 +741,31 @@ if [ -z "$PKG_PATH" ]; then
 fi
 ok "Install verified: $PKG_PATH"
 
-# With every com.ifit.* package disabled, the stock iFit home screen is gone.
-# Point the HOME intent at Hyperborea so a plain reboot lands on it. (If
-# Hyperborea is later uninstalled this preference clears and the system falls
-# back to whatever other launcher exists, e.g. com.android.launcher3.)
-# `cmd package set-home-activity` exists from API 24; tolerate older shells.
-HOME_OUT=$(adb shell "cmd package set-home-activity com.nettarion.hyperborea/.MainActivity" 2>&1 | tr -d '\r')
-if printf '%s\n' "$HOME_OUT" | grep -qi "success"; then
-    ok "Set Hyperborea as the home screen"
+# Every com.ifit.* package is disabled now, so the stock iFit home screen is
+# gone. Hand the HOME intent to the device's own AOSP launcher
+# (com.android.launcher3) — that's what the user lands on after a plain reboot.
+# Hyperborea isn't the home app; it keeps running headless as a foreground
+# service (BootReceiver restarts it on boot) and is reachable from the launcher's
+# app list. Only if the console ships no other launcher do we fall back to making
+# Hyperborea itself the home activity, so it's never left with no home screen.
+# `cmd package set-home-activity`/`query-activities` need `cmd` (API 24+); on
+# older shells both fail and the system shows its home chooser on first Home press.
+set_home_activity() { adb shell "cmd package set-home-activity $1" 2>&1 | tr -d '\r' | grep -qi "success"; }
+
+# First HOME-category activity that isn't iFit's, isn't Hyperborea, and isn't one
+# of the bare system fallbacks (settings FallbackHome / internal SystemUserHome).
+HOME_TARGET=$(adb shell "cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME" 2>/dev/null \
+    | tr -d '\r' | grep -oE '[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' \
+    | grep -viE '^com\.ifit\.|^com\.nettarion\.hyperborea/|^com\.android\.settings/|^android/' \
+    | head -1)
+
+if [ -n "$HOME_TARGET" ] && set_home_activity "$HOME_TARGET"; then
+    ok "Home screen: $HOME_TARGET"
+    info "Hyperborea runs in the background and auto-starts on boot — open it from the launcher to see the dashboard."
+elif set_home_activity "com.nettarion.hyperborea/.MainActivity"; then
+    warn "No other launcher on this console — set Hyperborea as the home screen"
 else
-    warn "Couldn't set Hyperborea as the home screen — pick it from the home chooser on the device"
-    [ "$VERBOSE" -eq 1 ] && printf '%s\n' "$HOME_OUT" | indent
+    warn "Couldn't set a home screen — pick one from the home chooser on the device"
 fi
 
 info "Launching Hyperborea..."
