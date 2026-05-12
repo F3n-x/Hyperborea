@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-05-11
+- Fix a crash on launch on stock iFit console firmware (observed on the
+  NordicTrack X22i): the foreground-service notification referenced framework
+  drawables (`android.R.drawable.*`) for its small icon and actions. On
+  firmware that ships a stripped `framework-res`, the small icon failed to
+  resolve, so the system rejected the notification ("Bad notification for
+  startForeground") and killed the process a couple of seconds after launch —
+  every launch. The notification now uses app-owned vector icons, and
+  `startForeground` is wrapped so a rejected notification degrades to a plain
+  service instead of taking the process down.
+
 ## [1.2.0] - 2026-05-10
 - Deployment no longer requires root. `release/Hyperborea/deploy.{sh,ps1,cmd}`
   now installs Hyperborea as a regular APK over plain ADB and disables iFit's
