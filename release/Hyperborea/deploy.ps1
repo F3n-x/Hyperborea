@@ -320,7 +320,7 @@ function Test-IpConnection {
 }
 
 function Invoke-AdbReconnectWait {
-    # No `adb root` — production-build firmware (the case this script targets)
+    # No `adb root` -- production-build firmware (the case this script targets)
     # rejects it. Just reconnect (if IP) and wait for the device.
     if (Test-IpConnection) {
         Start-Sleep -Seconds 2
@@ -396,11 +396,24 @@ function Wait-ForReboot {
 
     $waitStart = Get-Date
 
-    # Wait for device to actually go offline
-    while ($true) {
-        $null = Invoke-Adb shell true 2>$null
-        if ($LASTEXITCODE -ne 0) { break }
-        Start-Sleep -Seconds 1
+    # Let the device actually start shutting down before we look for it again --
+    # otherwise getprop reads a stale boot_completed=1 from the system that
+    # hasn't begun rebooting yet.
+    if (Test-IpConnection) {
+        # adb doesn't notice a TCP transport died when the console reboots; it
+        # clings to the dead socket and blocks on it for the full socket timeout
+        # (minutes). Drop the stale transport explicitly so the poll loop's
+        # `adb connect` reattaches as soon as adbd is back.
+        Start-Sleep -Seconds 5
+        Invoke-Adb disconnect $env:ANDROID_SERIAL 2>$null | Out-Null
+    } else {
+        # USB: the device falls off the bus on reboot, so this probe fails
+        # promptly -- just wait for that.
+        while ($true) {
+            $null = Invoke-Adb shell true 2>$null
+            if ($LASTEXITCODE -ne 0) { break }
+            Start-Sleep -Seconds 1
+        }
     }
 
     # Poll for boot completion (reconnect if IP)
@@ -427,22 +440,6 @@ function Wait-ForReboot {
 }
 
 # =========================================================================
-# Configuration
-# =========================================================================
-# `com.ifit.launcher` is intentionally absent: leaving it enabled gives the
-# device's home button somewhere to land. The launcher can't open the workout
-# apps once those are disabled, but it remains as a benign navigation anchor.
-$IfitPackages = @(
-    "com.ifit.eru"
-    "com.ifit.standalone"
-    "com.ifit.arda"
-    "com.ifit.glassos_service"
-    "com.ifit.gandalf"
-    "com.ifit.rivendell"
-    "com.ifit.mithlond"
-)
-
-# =========================================================================
 # Step 1: Pre-flight
 # =========================================================================
 if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
@@ -464,7 +461,7 @@ $otherApks = @(Get-ChildItem -Path $AppsDir -Filter "*.apk" -ErrorAction Silentl
 
 Write-Ok "Found $($hyperboreaApk.Name)"
 
-# Build wizard sections — only the additional-apps picker remains, gated
+# Build wizard sections -- only the additional-apps picker remains, gated
 # on the apps\ directory containing anything beyond Hyperborea.
 $script:WizSections = @()
 $script:WizLabels = @()
@@ -494,7 +491,7 @@ if ($otherApks.Count -gt 0) {
 Find-Device
 
 # Sanity check that we have a working ADB shell. Running as the unprivileged
-# `shell` user is expected and fine — the rest of the script never reaches
+# `shell` user is expected and fine -- the rest of the script never reaches
 # for root.
 Invoke-Adb shell true 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -503,10 +500,10 @@ if ($LASTEXITCODE -ne 0) {
 $whoami = (Invoke-Adb shell "whoami" 2>$null) -replace "`r",""
 $deviceSdk = (Invoke-Adb shell "getprop ro.build.version.sdk" 2>$null) -replace "`r",""
 $deviceRelease = (Invoke-Adb shell "getprop ro.build.version.release" 2>$null) -replace "`r",""
-Write-Ok ("ADB connected (user: {0}, Android {1} / API {2})" -f
-    (if ($whoami) { $whoami } else { 'shell' }),
-    (if ($deviceRelease) { $deviceRelease } else { '?' }),
-    (if ($deviceSdk) { $deviceSdk } else { '?' }))
+$userStr = if ($whoami) { $whoami } else { 'shell' }
+$releaseStr = if ($deviceRelease) { $deviceRelease } else { '?' }
+$sdkStr = if ($deviceSdk) { $deviceSdk } else { '?' }
+Write-Ok ("ADB connected (user: {0}, Android {1} / API {2})" -f $userStr, $releaseStr, $sdkStr)
 
 # `adb install -g` (auto-grant runtime permissions) was introduced with the
 # runtime-permission model in API 23. On API 22 the device's `pm` rejects -g
@@ -578,35 +575,47 @@ if ($installed -gt 0 -or $failed -gt 0) {
 # =========================================================================
 Write-Step 4 "Disable iFit"
 
-# `pm disable-user --user 0` works as the unprivileged shell user; it
-# doesn't kill running processes (the reboot in step 5 handles that), but
-# it stops them from launching again.
-$disabled = 0; $already = 0; $absent = 0
-$installedPkgs = Invoke-Adb shell "pm list packages" 2>$null
-$disabledPkgs = Invoke-Adb shell "pm list packages -d" 2>$null
-foreach ($pkg in $IfitPackages) {
-    $needle = "package:$pkg"
-    if (-not ($installedPkgs -match [regex]::Escape($needle))) {
-        $absent++
-        continue
+# Enumerate every iFit package actually present rather than hardcoding a list --
+# firmware revisions ship different sets of GlassOS service packages, and a
+# fixed list silently misses whatever a later update adds.
+# `com.ifit.launcher` is deliberately kept enabled so the device's home button
+# still has somewhere to land; it can't open the (disabled) workout apps, but
+# it remains a benign navigation anchor.
+#
+# `pm disable-user --user 0` works as the unprivileged shell user; it doesn't
+# kill running processes (the reboot in step 5 handles that), but it stops them
+# from launching again.
+$ifitPackages = @(
+    (Invoke-Adb shell "pm list packages com.ifit" 2>$null) -replace "`r","" |
+        ForEach-Object { $_ -replace '^package:','' } |
+        Where-Object { $_ -match '^com\.ifit\.' -and $_ -ne 'com.ifit.launcher' } |
+        Sort-Object
+)
+
+if ($ifitPackages.Count -eq 0) {
+    Write-Warn "No com.ifit.* packages found on the device -- nothing to disable."
+} else {
+    $disabledPkgs = (Invoke-Adb shell "pm list packages -d com.ifit" 2>$null) -replace "`r",""
+    $disabled = 0; $already = 0
+    foreach ($pkg in $ifitPackages) {
+        if ($disabledPkgs -contains "package:$pkg") {
+            Write-Ok "$pkg already disabled"
+            $already++
+            continue
+        }
+        $result = Invoke-Adb shell "pm disable-user --user 0 $pkg" 2>&1
+        # PackageManagerShellCommand prints "Package $pkg new state: disabled-user".
+        # Match the exact suffix to avoid colliding with `disable-until-used`.
+        if ($result -match "new state: disabled-user") {
+            Write-Ok "Disabled $pkg"
+            $disabled++
+        } else {
+            Write-Warn "Could not disable $pkg"
+        }
     }
-    if ($disabledPkgs -match [regex]::Escape($needle)) {
-        Write-Ok "$pkg already disabled"
-        $already++
-        continue
-    }
-    $result = Invoke-Adb shell "pm disable-user --user 0 $pkg" 2>&1
-    # PackageManagerShellCommand prints "Package $pkg new state: disabled-user".
-    # Match the exact suffix to avoid colliding with `disable-until-used`.
-    if ($result -match "new state: disabled-user") {
-        Write-Ok "Disabled $pkg"
-        $disabled++
-    } else {
-        Write-Warn "Could not disable $pkg"
-    }
+    Write-Host ""
+    Write-Info "$disabled newly disabled, $already already disabled ($($ifitPackages.Count) iFit package(s) found, launcher kept enabled)"
 }
-Write-Host ""
-Write-Info "$disabled newly disabled, $already already disabled, $absent not present"
 
 # =========================================================================
 # Step 5: Reboot, verify, and launch
@@ -623,7 +632,7 @@ Write-Ok "Device back online ($(Format-Elapsed ([int]((Get-Date) - $rebootStart)
 
 $pkgPath = (Invoke-Adb shell "pm path com.nettarion.hyperborea" 2>$null) -replace "`r",""
 if (-not $pkgPath) {
-    Stop-WithError "Hyperborea is not installed after reboot — something went wrong."
+    Stop-WithError "Hyperborea is not installed after reboot -- something went wrong."
 }
 Write-Ok "Install verified: $pkgPath"
 

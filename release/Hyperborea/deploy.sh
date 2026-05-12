@@ -410,9 +410,21 @@ wait_for_reboot() {
     local max_wait=${1:-300}
     local wait_start=$(date +%s)
 
-    # Wait for device to actually go offline (avoids false boot_completed=1
-    # from the still-running system before reboot takes effect)
-    while adb shell true 2>/dev/null; do sleep 1; done
+    # Let the device actually start shutting down before we look for it again —
+    # otherwise getprop reads a stale boot_completed=1 from the system that
+    # hasn't begun rebooting yet.
+    if is_ip_connection; then
+        # adb doesn't notice a TCP transport died when the console reboots; it
+        # clings to the dead socket and blocks on it for the full socket timeout
+        # (minutes). Drop the stale transport explicitly so the poll loop's
+        # `adb connect` reattaches as soon as adbd is back.
+        sleep 5
+        adb disconnect "$ANDROID_SERIAL" >/dev/null 2>&1 || true
+    else
+        # USB: the device falls off the bus on reboot, so this probe fails
+        # promptly — just wait for that.
+        while adb shell true 2>/dev/null; do sleep 1; done
+    fi
 
     # Single poll loop: reconnect (if IP) → check boot_completed → retry
     while true; do
@@ -455,20 +467,6 @@ for f in "$APPS_DIR"/Hyperborea*.apk; do
 done
 [ -n "$HYPERBOREA_APK" ] || die "No Hyperborea*.apk found in apps/. Place the APK there and try again."
 
-# iFit packages to disable after deployment.
-# `com.ifit.launcher` is kept enabled so the device's home button still has
-# something to land on; the launcher can't open the workout apps once those
-# are disabled, but it remains as a benign navigation anchor.
-IFIT_PACKAGES=(
-    com.ifit.eru
-    com.ifit.standalone
-    com.ifit.arda
-    com.ifit.glassos_service
-    com.ifit.gandalf
-    com.ifit.rivendell
-    com.ifit.mithlond
-)
-
 # Collect other APKs
 OTHER_APKS=()
 for f in "$APPS_DIR"/*.apk; do
@@ -506,7 +504,8 @@ fi
 # =========================================================================
 # Step 1: Connect to device
 # =========================================================================
-step 1 "Connect to device"
+# discover_device prints the "[1/5] Connect to device" header itself (it
+# reprints it each time the device list is rescanned), so don't print it here.
 discover_device
 
 # Quick sanity check that we have a working ADB shell. Running as the
@@ -591,34 +590,47 @@ fi
 # =========================================================================
 step 4 "Disable iFit"
 
-# `pm disable-user --user 0` works as the unprivileged shell user; it
-# doesn't kill running processes (the reboot in step 5 handles that), but
-# it stops them from launching again.
-DISABLED=0
-ALREADY=0
-ABSENT=0
-for pkg in "${IFIT_PACKAGES[@]}"; do
-    if ! adb shell "pm list packages" 2>/dev/null | grep -q "^package:$pkg$"; then
-        ABSENT=$((ABSENT + 1))
-        continue
-    fi
-    if adb shell "pm list packages -d" 2>/dev/null | grep -q "^package:$pkg$"; then
-        ok "$pkg already disabled"
-        ALREADY=$((ALREADY + 1))
-        continue
-    fi
-    # PackageManagerShellCommand prints "Package $pkg new state: disabled-user".
-    # Match the exact suffix to avoid colliding with `disable-until-used`.
-    if adb shell "pm disable-user --user 0 $pkg" 2>&1 | grep -q "new state: disabled-user"; then
-        ok "Disabled $pkg"
-        DISABLED=$((DISABLED + 1))
-    else
-        warn "Could not disable $pkg"
-    fi
-done
+# Enumerate every iFit package actually present rather than hardcoding a list —
+# firmware revisions ship different sets of GlassOS service packages, and a
+# fixed list silently misses whatever a later update adds.
+# `com.ifit.launcher` is deliberately kept enabled so the device's home button
+# still has somewhere to land; it can't open the (disabled) workout apps, but
+# it remains a benign navigation anchor.
+#
+# `pm disable-user --user 0` works as the unprivileged shell user; it doesn't
+# kill running processes (the reboot in step 5 handles that), but it stops them
+# from launching again.
+IFIT_PACKAGES=()
+while IFS= read -r pkg; do
+    [ -n "$pkg" ] || continue
+    IFIT_PACKAGES+=("$pkg")
+done < <(adb shell "pm list packages com.ifit" 2>/dev/null | tr -d '\r' \
+            | sed 's/^package://' | grep '^com\.ifit\.' | grep -Fvx 'com.ifit.launcher' | sort)
 
-echo ""
-info "$DISABLED newly disabled, $ALREADY already disabled, $ABSENT not present"
+if [ ${#IFIT_PACKAGES[@]} -eq 0 ]; then
+    warn "No com.ifit.* packages found on the device — nothing to disable."
+else
+    DISABLED_LIST=$(adb shell "pm list packages -d com.ifit" 2>/dev/null | tr -d '\r')
+    DISABLED=0
+    ALREADY=0
+    for pkg in "${IFIT_PACKAGES[@]}"; do
+        if printf '%s\n' "$DISABLED_LIST" | grep -qFx "package:$pkg"; then
+            ok "$pkg already disabled"
+            ALREADY=$((ALREADY + 1))
+            continue
+        fi
+        # PackageManagerShellCommand prints "Package $pkg new state: disabled-user".
+        # Match the exact suffix to avoid colliding with `disable-until-used`.
+        if adb shell "pm disable-user --user 0 $pkg" 2>&1 | grep -q "new state: disabled-user"; then
+            ok "Disabled $pkg"
+            DISABLED=$((DISABLED + 1))
+        else
+            warn "Could not disable $pkg"
+        fi
+    done
+    echo ""
+    info "$DISABLED newly disabled, $ALREADY already disabled (${#IFIT_PACKAGES[@]} iFit package(s) found, launcher kept enabled)"
+fi
 
 # =========================================================================
 # Step 5: Reboot, verify, and launch

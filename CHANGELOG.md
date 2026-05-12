@@ -25,6 +25,17 @@
   dialog gets a 10-minute budget (vs. the 10 s the orchestrator gives the
   pm/am-call prerequisites); a denied dialog now surfaces "USB device permission
   was not granted" instead of a misleading hardware-probe error.
+- `deploy.{sh,ps1}`: fix the post-install reboot hanging on "Waiting for
+  device…" for minutes over ADB-over-TCP. adb keeps the dead TCP transport
+  after the console reboots and blocks on it for the full socket timeout, so
+  the script now drops the stale transport with `adb disconnect` and lets the
+  existing reconnect loop reattach once adbd is back, instead of waiting for
+  the dead-socket probe to time out. (USB path unchanged.)
+- `deploy.{sh,ps1}`: disable iFit by enumerating the `com.ifit.*` packages
+  actually installed (`pm list packages com.ifit`, minus `com.ifit.launcher`)
+  instead of a hardcoded list — firmware revisions ship different sets of
+  GlassOS service packages, and the fixed list silently missed whatever a
+  later update added.
 
 ## [1.2.1] - 2026-05-11
 - Fix a crash on launch on stock iFit console firmware (observed on the
