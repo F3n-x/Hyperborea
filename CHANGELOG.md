@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-05-12
+- The 1.2.1 fix for the "Bad notification for startForeground" crash-loop was
+  incomplete. It switched the foreground-service notification's icons from
+  `android.R.drawable.*` to app-owned **vector** drawables — but notification
+  icons are rendered by the *system* process, and on firmware that ships a
+  stripped `framework-res` (stock iFit consoles, e.g. NordicTrack S22i/X22i)
+  the system process can't inflate a `<vector>` either, so the notification was
+  still rejected and the process still killed ~2 s after launch, every launch.
+  The notification small icon is now a **PNG** (white-on-transparent, all five
+  density buckets); the two action icons reuse it (they aren't drawn by the
+  standard template on API 24+ anyway). Also removed the `try/catch` 1.2.1 put
+  around `startForeground()` — `RemoteServiceException` for a bad notification
+  is delivered asynchronously on the main-thread Handler, not thrown out of the
+  `startForeground()` call, so that catch never ran.
+
 ## [1.2.1] - 2026-05-11
 - Fix a crash on launch on stock iFit console firmware (observed on the
   NordicTrack X22i): the foreground-service notification referenced framework

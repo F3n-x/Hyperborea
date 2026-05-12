@@ -41,15 +41,7 @@ class HyperboreaService : Service() {
     override fun onCreate() {
         super.onCreate()
         @Suppress("DEPRECATION")
-        try {
-            startForeground(NOTIFICATION_ID, buildNotification("Starting…"))
-        } catch (e: RuntimeException) {
-            // Some OEM firmware (e.g. stock iFit consoles) can reject the foreground
-            // notification and would otherwise kill the process. Degrade to a plain
-            // service rather than crash — on a dedicated console there is no memory
-            // pressure to worry about.
-            logger.e(TAG, "startForeground rejected by system; running without it", e)
-        }
+        startForeground(NOTIFICATION_ID, buildNotification("Starting…"))
         overlayManager = OverlayManager(
             context = this,
             orchestrator = orchestrator,
@@ -203,9 +195,13 @@ class HyperboreaService : Service() {
             this, 2, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        // Icons must be app-owned, not android.R.drawable.*: stripped OEM firmware may
-        // not ship the framework drawables, and a small icon that fails to resolve makes
-        // the system reject the whole notification ("Bad notification for startForeground").
+        // Notification icons are rendered by the *system* process, so they must be
+        // app-owned (not android.R.drawable.*) AND raster PNGs (not vector drawables):
+        // stock iFit console firmware ships a stripped framework-res whose system process
+        // can't inflate a <vector>, and an icon that fails to load makes the system reject
+        // the whole notification ("Bad notification for startForeground") and kill us.
+        // The two action icons aren't drawn by the standard template on API 24+, so they
+        // reuse the status icon rather than carrying their own raster sets.
         return Notification.Builder(this)
             .setSmallIcon(R.drawable.ic_stat_hyperborea)
             .setContentTitle("Hyperborea")
@@ -214,12 +210,12 @@ class HyperboreaService : Service() {
             .setOngoing(true)
             .addAction(
                 Notification.Action.Builder(
-                    R.drawable.ic_action_overlay, "Overlay", overlayPendingIntent,
+                    R.drawable.ic_stat_hyperborea, "Overlay", overlayPendingIntent,
                 ).build(),
             )
             .addAction(
                 Notification.Action.Builder(
-                    R.drawable.ic_action_stop, "Stop", stopPendingIntent,
+                    R.drawable.ic_stat_hyperborea, "Stop", stopPendingIntent,
                 ).build(),
             )
             .build()
