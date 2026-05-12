@@ -3,7 +3,10 @@
 ## [Unreleased]
 
 ## [1.2.4] - 2026-05-12
+- Don't surface a USB-permission error on the dashboard at boot: `Orchestrator.probe()` is now passive — it doesn't pop the USB permission dialog or go into an error state when nothing's connecting yet; it just re-probes when the FitPro device becomes accessible (or when the user starts a workout).
 - `deploy.{sh,ps1}`: hand the home screen to the device's own Android launcher (`com.android.launcher3`) instead of making Hyperborea the home app — pressing Home goes to the normal Android launcher, and Hyperborea keeps running in the background (its `BootReceiver` restarts the foreground service on boot, so it doesn't need to be the home app). Falls back to Hyperborea-as-home only on consoles that ship no other launcher. To switch a console already deployed with an older build: `adb shell cmd package set-home-activity com.android.launcher3/.Launcher`.
+- `deploy.ps1`/`deploy.cmd`: adb's chatter on stderr (the "daemon not running; starting it now" notice, post-reboot transport messages, `su: not found`, …) no longer aborts the PowerShell deploy mid-run; `deploy.cmd` now returns the deploy's real exit code.
+- Internal: the console membrane keypad (`KEY_OBJECT`) is now decoded and exposed as an observe-only event stream — groundwork for showing physical button presses in the UI; no behaviour change (the equipment's own controller still handles those keys).
 
 ## [1.2.3] - 2026-05-12
 - **Fix the foreground-service crash-loop on consoles running Android 8.0+ (ICON consoles ship anything from Android 5.1 to 9+, not just the 7.1.2 the older code assumed):** the service notification now creates a `NotificationChannel` on API 26+ (a channel-less notification is rejected → `RemoteServiceException: Bad notification for startForeground` → crash every ~6 s), declares `android:foregroundServiceType="connectedDevice"` (mandatory on API 34+), `POST_NOTIFICATIONS` (API 33+), and is started via `startForegroundService()` from background contexts (boot receiver / `Application.onCreate()`) so it doesn't `IllegalStateException` on API 26+.
