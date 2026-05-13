@@ -82,15 +82,27 @@ object V1Codec {
         }
     }
 
-    fun decodeSingle(packet: ByteArray): V1Message.Incoming? {
-        // Trim to declared length (byte[1]) — USB always returns 64 bytes
-        val trimmed = if (packet.size > 1) {
-            val declaredLen = packet[1].toInt() and 0xFF
-            if (declaredLen in 3..packet.size) packet.copyOf(declaredLen) else packet
-        } else {
-            packet
-        }
-        return decode(listOf(trimmed))
+    fun decodeSingle(packet: ByteArray): V1Message.Incoming? = decode(listOf(trimToDeclaredLength(packet)))
+
+    /**
+     * Decodes a single-packet ReadWriteData response using an explicit field set — the default
+     * [decodeSingle]/[decode] path always decodes a ReadWriteData response with
+     * [V1DataField.periodicReadFields]. Returns null if the packet isn't a ReadWriteData response
+     * or is too short.
+     */
+    fun decodeSingleDataResponse(packet: ByteArray, expectedFields: Set<V1DataField>): V1Message.Incoming.DataResponse? {
+        val trimmed = trimToDeclaredLength(packet)
+        if (trimmed.size < HEADER_SIZE + 1 || trimmed[2] != CMD_READ_WRITE_DATA) return null
+        val status = trimmed[3].toInt() and 0xFF
+        val payload = trimmed.copyOfRange(HEADER_SIZE, trimmed.size - 1)
+        return decodeDataResponse(status, payload, expectedFields) as? V1Message.Incoming.DataResponse
+    }
+
+    /** Trims a received packet to the declared length in byte[1] — USB always pads reads to 64 bytes. */
+    private fun trimToDeclaredLength(packet: ByteArray): ByteArray {
+        if (packet.size <= 1) return packet
+        val declaredLen = packet[1].toInt() and 0xFF
+        return if (declaredLen in 3..packet.size) packet.copyOf(declaredLen) else packet
     }
 
     fun checksum(data: ByteArray): Byte {

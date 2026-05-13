@@ -12,7 +12,6 @@ import com.nettarion.hyperborea.hardware.fitpro.session.FitProSession
 import com.nettarion.hyperborea.hardware.fitpro.session.PowerEstimator
 import com.nettarion.hyperborea.hardware.fitpro.session.SessionState
 import com.nettarion.hyperborea.hardware.fitpro.transport.HidTransport
-import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -62,6 +61,7 @@ class V1Session(
     private var lastSentGrade = 0f
     private var lastSentSpeed = 0f
     private var lastKeyCode = -1 // for KEY_OBJECT press-edge detection
+    private val resistance = ResistanceConverter(deviceInfo.maxResistance)
 
     /** Device capabilities read from MCU during handshake. */
     var capabilities: V1Capabilities? = null
@@ -122,13 +122,12 @@ class V1Session(
 
                 // Write WORKOUT_MODE=IDLE before disconnecting — fire-and-forget,
                 // don't wait for responses since we're tearing down.
-                val idleMsg = V1Message.Outgoing.ReadWriteData(
+                writeMessage(V1Message.Outgoing.ReadWriteData(
                     writeFields = mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.IDLE.raw),
-                )
-                transport.write(V1Codec.encode(idleMsg).first())
+                ))
                 delay(COMMAND_DELAY_MS)
 
-                transport.write(V1Codec.encode(V1Message.Outgoing.Disconnect()).first())
+                writeMessage(V1Message.Outgoing.Disconnect())
                 delay(COMMAND_DELAY_MS)
                 transport.close()
             }
@@ -196,8 +195,7 @@ class V1Session(
 
     internal fun commandToFields(command: DeviceCommand): Map<V1DataField, Float> = when (command) {
         is DeviceCommand.SetResistance -> {
-            val raw = resistanceLevelToRaw(command.level)
-            mapOf(V1DataField.RESISTANCE to raw.toFloat())
+            mapOf(V1DataField.RESISTANCE to resistance.levelToRaw(command.level).toFloat())
         }
         is DeviceCommand.SetIncline -> {
             lastSentGrade = roundToStep(command.percent, deviceInfo.inclineStep)
@@ -384,13 +382,13 @@ class V1Session(
             // Couldn't read the device's bitfield map — keep the historical behaviour of writing
             // both, but now un-crammed and while the console is still IDLE (which the MCU expects).
             supportedBitFields.isEmpty() -> {
-                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, 1f)
-                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, 1f)
+                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, FIELD_ENABLED)
+                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, FIELD_ENABLED)
             }
             V1DataField.REQUIRE_START_REQUESTED.fieldIndex in supportedBitFields ->
-                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, 1f)
+                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, FIELD_ENABLED)
             else ->
-                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, 1f)
+                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, FIELD_ENABLED)
         }
     }
 
@@ -413,7 +411,7 @@ class V1Session(
     }
 
     private suspend fun writeAndConfirmWorkoutMode(target: WorkoutMode, accept: (WorkoutMode) -> Boolean): WorkoutMode? {
-        repeat(STATE_CONFIRM_MAX_ATTEMPTS) { attempt ->
+        repeat((STATE_CONFIRM_TIMEOUT_MS / STATE_CONFIRM_POLL_MS).toInt()) { attempt ->
             // Assert the target on the first attempt; subsequent attempts just poll the read-back.
             val response = sendReadWrite(
                 writeFields = if (attempt == 0) mapOf(V1DataField.WORKOUT_MODE to target.raw) else emptyMap(),
@@ -429,28 +427,22 @@ class V1Session(
 
     /**
      * Sends one ReadWriteData (writes [writeFields], requests [readFields]) and decodes the single-
-     * packet response, returning the read field values (or null on no/garbled response). Used for
-     * the startup-field read and the workout-state writes/confirmations — not the poll loop, which
-     * reads the multi-packet [V1DataField.periodicReadFields] via [pollOnce].
+     * packet response, returning it (or null on no/garbled response). Used for the startup-field read
+     * and the workout-state writes/confirmations — not the poll loop, which reads the multi-packet
+     * [V1DataField.periodicReadFields] via [pollOnce].
      */
     private suspend fun sendReadWrite(
         writeFields: Map<V1DataField, Float> = emptyMap(),
         readFields: Set<V1DataField> = emptySet(),
     ): V1Message.Incoming.DataResponse? {
-        val message = V1Message.Outgoing.ReadWriteData(writeFields = writeFields, readFields = readFields)
-        for (packet in V1Codec.encode(message)) transport.write(packet)
+        writeMessage(V1Message.Outgoing.ReadWriteData(writeFields = writeFields, readFields = readFields))
         delay(READ_DELAY_MS)
         val raw = readPacketOrNull() ?: return null
-        // USB returns 64-byte packets padded with 0xFF — trim to the declared length.
-        val trimmed = raw.takeIf { it.size > 1 }?.let { p ->
-            val len = p[1].toInt() and 0xFF
-            if (len in 3..p.size) p.copyOf(len) else p
-        } ?: raw
-        if (trimmed.size < 5 || trimmed[2] != READ_WRITE_DATA_CMD) return null
-        val status = trimmed[3].toInt() and 0xFF
-        val payload = trimmed.copyOfRange(4, trimmed.size - 1)
-        val decoded = V1Codec.decodeDataResponse(status, payload, readFields.ifEmpty { V1DataField.periodicReadFields })
-        return decoded as? V1Message.Incoming.DataResponse
+        return V1Codec.decodeSingleDataResponse(raw, readFields.ifEmpty { V1DataField.periodicReadFields })
+    }
+
+    private suspend fun writeMessage(message: V1Message.Outgoing) {
+        for (packet in V1Codec.encode(message)) transport.write(packet)
     }
 
     private fun startPollLoop() {
@@ -499,15 +491,10 @@ class V1Session(
         }
 
         // ReadWriteData targets DEVICE_MAIN (0x02) — FITNESS_BIKE (0x07) returns DEV_NOT_SUPPORTED
-        val message = V1Message.Outgoing.ReadWriteData(
+        writeMessage(V1Message.Outgoing.ReadWriteData(
             writeFields = writeFields,
             readFields = V1DataField.periodicReadFields,
-        )
-
-        val packets = V1Codec.encode(message)
-        for (packet in packets) {
-            transport.write(packet)
-        }
+        ))
 
         delay(READ_DELAY_MS)
 
@@ -584,10 +571,7 @@ class V1Session(
                 }
                 V1DataField.ACTUAL_KPH -> accumulator.updateSpeed(value)
                 V1DataField.KPH -> accumulator.updateTargetSpeed(value)
-                V1DataField.RESISTANCE -> {
-                    val level = resistanceRawToLevel(value.toInt())
-                    accumulator.updateResistance(level)
-                }
+                V1DataField.RESISTANCE -> accumulator.updateResistance(resistance.rawToLevel(value.toInt()))
                 V1DataField.ACTUAL_INCLINE -> accumulator.updateIncline(value)
                 V1DataField.GRADE -> accumulator.updateTargetIncline(value)
                 V1DataField.PULSE -> accumulator.updateHeartRate(value.toInt())
@@ -729,7 +713,7 @@ class V1Session(
     }
 
     private suspend fun sendAndAwait(message: V1Message.Outgoing): V1Message.Incoming? {
-        for (packet in V1Codec.encode(message)) transport.write(packet)
+        writeMessage(message)
         delay(READ_DELAY_MS)
         val firstPacket = readPacketOrNull() ?: return null
         return readResponse(firstPacket)
@@ -755,17 +739,6 @@ class V1Session(
     private fun roundToStep(value: Float, step: Float): Float =
         (value / step).roundToInt() * step
 
-    // ResistanceConverter (GlassOS): scale = 10000 / maxResistance (a fraction — use float math);
-    // raw = round(level * scale) - 1, clamped ≥ 0; level = ceil(raw / scale).
-    private val resistanceScale: Double =
-        if (deviceInfo.maxResistance > 0) 10000.0 / deviceInfo.maxResistance else 1.0
-
-    private fun resistanceLevelToRaw(level: Int): Int =
-        maxOf(0, (level * resistanceScale).roundToInt() - 1)
-
-    private fun resistanceRawToLevel(raw: Int): Int =
-        ceil(raw / resistanceScale).toInt()
-
 
     companion object {
         private const val TAG = "V1Session"
@@ -779,11 +752,13 @@ class V1Session(
         private const val CALIBRATION_POLL_MS = 4000L // 4-second poll interval during calibration
         private const val MAX_CALIBRATION_ATTEMPTS = 60 // 4-minute timeout at 4s intervals
 
-        // Confirming a WORKOUT_MODE transition: re-read WORKOUT_MODE every 150 ms for up to ~5 s.
+        // Confirming a WORKOUT_MODE transition: re-read WORKOUT_MODE every STATE_CONFIRM_POLL_MS,
+        // for up to STATE_CONFIRM_TIMEOUT_MS, before giving up and continuing degraded.
         private const val STATE_CONFIRM_POLL_MS = 150L
-        private const val STATE_CONFIRM_MAX_ATTEMPTS = 34
+        private const val STATE_CONFIRM_TIMEOUT_MS = 5_000L
 
-        private const val READ_WRITE_DATA_CMD: Byte = 0x02
+        // Console-init field values: 1 = ENABLED (REQUIRE_START_REQUESTED) / LOCKED (IDLE_MODE_LOCKOUT).
+        private const val FIELD_ENABLED = 1f
 
         // KEY_OBJECT key codes for the console-keypad buttons we forward.
         private const val KEY_SPEED_UP = 3
