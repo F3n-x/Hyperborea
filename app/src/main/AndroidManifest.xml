@@ -56,7 +56,7 @@
     <!-- Auto-start on boot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- App self-update — fires the system installer dialog via ACTION_VIEW.
+    <!-- App self-update — commits the downloaded APK via PackageInstaller (AppInstaller).
          Normal-protection permission, auto-granted at install. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -111,16 +111,6 @@
             android:name=".HyperboreaService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
-
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
 
         <receiver
             android:name=".BootReceiver"
