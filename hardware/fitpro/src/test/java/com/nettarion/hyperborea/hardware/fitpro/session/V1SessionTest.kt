@@ -58,7 +58,7 @@ class V1SessionTest {
     }
 
     @Test
-    fun `start sends SupportedDevices then Connect`() = runTest {
+    fun `start sends DeviceInfo then Connect`() = runTest {
         val session = createSession(this)
 
         backgroundScope.launch {
@@ -69,9 +69,9 @@ class V1SessionTest {
         advanceUntilIdle()
 
         assertThat(transport.writtenPackets).isNotEmpty()
-        // First packet is SupportedDevices (0x80)
-        assertThat(transport.writtenPackets[0][2]).isEqualTo(0x80.toByte())
-        // Second packet is Connect (0x04)
+        // First packet is DeviceInfo (0x81) — its response reports the equipment device type
+        assertThat(transport.writtenPackets[0][2]).isEqualTo(0x81.toByte())
+        // Second packet is Connect (0x04) to that device
         assertThat(transport.writtenPackets[1][2]).isEqualTo(0x04)
     }
 
@@ -236,13 +236,48 @@ class V1SessionTest {
     }
 
     private suspend fun respondToHandshake() {
-        transport.emitIncoming(buildSupportedDevicesResponse())
-        transport.emitIncoming(buildConnectAck())
         transport.emitIncoming(buildDeviceInfoResponse())
+        transport.emitIncoming(buildConnectAck())
+        transport.emitIncoming(buildSupportedDevicesResponse())
         transport.emitIncoming(buildSystemInfoResponse())
         transport.emitIncoming(buildVersionInfoResponse())
         transport.emitIncoming(buildSecurityUnlockedResponse())
         transport.emitIncoming(buildCapabilityResponse())
+        respondToConsoleStartup()
+    }
+
+    /**
+     * Responses for the post-handshake part of start(): prepareConsole() writes one field
+     * (REQUIRE_START_REQUESTED, since [buildDeviceInfoResponse] declares it), then transitionToRunning()
+     * writes WORKOUT_MODE=WARM_UP and confirms, then WORKOUT_MODE=RUNNING and confirms.
+     */
+    private suspend fun respondToConsoleStartup() {
+        transport.emitIncoming(buildReadWriteAck())         // prepareConsole: REQUIRE_START_REQUESTED write
+        transport.emitIncoming(buildWorkoutModeAck(10))     // transitionToRunning: WARM_UP confirmed
+        transport.emitIncoming(buildWorkoutModeAck(2))      // transitionToRunning: RUNNING confirmed
+    }
+
+    /** A minimal ReadWriteData response — status DONE, empty payload (the caller ignores the value). */
+    private fun buildReadWriteAck(): ByteArray {
+        val data = byteArrayOf(0x07, 0x05, 0x02, 0x02) // device, len, cmd=ReadWriteData, status=DONE
+        return data + V1Codec.checksum(data)
+    }
+
+    /** A ReadWriteData response carrying a single 1-byte WORKOUT_MODE value. */
+    private fun buildWorkoutModeAck(mode: Int): ByteArray {
+        val data = byteArrayOf(0x07, 0x06, 0x02, 0x02, mode.toByte())
+        return data + V1Codec.checksum(data)
+    }
+
+    /**
+     * If [this] is an outgoing ReadWriteData packet that writes exactly WORKOUT_MODE (index 12 →
+     * section 1, bit 4: writeNumSections=2, writeMask=[0x00, 0x10], then the data byte), return that
+     * value; otherwise null. (Encoding: [deviceId, len, cmd=0x02, writeNumSections, writeMask…, data…, readPayload…].)
+     */
+    private fun ByteArray.workoutModeWriteValue(): Int? {
+        if (size < 7 || this[2] != 0x02.toByte()) return null
+        if (this[3] != 0x02.toByte() || this[4] != 0x00.toByte() || this[5] != 0x10.toByte()) return null
+        return this[6].toInt() and 0xFF
     }
 
     private suspend fun respondWithDataResponse() {
@@ -265,16 +300,25 @@ class V1SessionTest {
         return data + V1Codec.checksum(data)
     }
 
-    private fun buildDeviceInfoResponse(): ByteArray {
-        // sw=80 (>75, triggers security), hw=3, serial=0x01020304
-        val data = byteArrayOf(
-            0x02, 0x0F, 0x81.toByte(), 0x02,
-            80, 3, // sw, hw
+    private fun buildDeviceInfoResponse(
+        deviceId: Int = V1Message.DEVICE_FITNESS_BIKE,
+        sw: Int = 80, // >75 → triggers security
+        supportedBitFields: Set<Int> = setOf(V1DataField.REQUIRE_START_REQUESTED.fieldIndex),
+    ): ByteArray {
+        // byte0 = the device's own equipment type (the MCU echoes it here); hw=3; serial=0x01020304;
+        // then [sectionCount, sectionCount mask bytes] declaring which bitfields the device supports.
+        val sectionCount = supportedBitFields.maxOrNull()?.let { it / 8 + 1 } ?: 0
+        val mask = ByteArray(sectionCount)
+        for (idx in supportedBitFields) mask[idx / 8] = (mask[idx / 8].toInt() or (1 shl (idx % 8))).toByte()
+        val body = byteArrayOf(
+            deviceId.toByte(), 0, 0x81.toByte(), 0x02, // [1] = length, filled in below
+            sw.toByte(), 3, // sw, hw
             0x04, 0x03, 0x02, 0x01, // serial LE
             0, 0, // manufacturer
-            1, 0, // sections, bitmask
-        )
-        return data + V1Codec.checksum(data)
+            sectionCount.toByte(),
+        ) + mask
+        body[1] = (body.size + 1).toByte() // total length incl. checksum
+        return body + V1Codec.checksum(body)
     }
 
     private fun buildSystemInfoResponse(): ByteArray {
@@ -353,6 +397,39 @@ class V1SessionTest {
         assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
     }
 
+    @Test
+    fun `start brings the console up through WARM_UP then RUNNING`() = runTest {
+        val session = createSession(this)
+
+        backgroundScope.launch { respondToHandshake() }
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        // The console-state transition must go IDLE → WARM_UP(10) → RUNNING(2), in that order —
+        // not straight to RUNNING (newer console firmware rejects that).
+        val workoutModeWrites = transport.writtenPackets.mapNotNull { it.workoutModeWriteValue() }
+        assertThat(workoutModeWrites).containsExactly(10, 2).inOrder()
+    }
+
+    @Test
+    fun `start does not cram REQUIRE_START_REQUESTED or IDLE_MODE_LOCKOUT into the RUNNING packet`() = runTest {
+        val session = createSession(this)
+
+        backgroundScope.launch { respondToHandshake() }
+
+        session.start()
+        advanceUntilIdle()
+
+        // The WORKOUT_MODE=RUNNING write must be a packet that writes WORKOUT_MODE alone — those
+        // init-only fields are written earlier (in IDLE), not alongside the workout transition.
+        val runningPacket = transport.writtenPackets.first { it.workoutModeWriteValue() == 2 }
+        // A WORKOUT_MODE-only write has writeNumSections=2 (WORKOUT_MODE is in section 1); a packet
+        // that also wrote REQUIRE_START_REQUESTED (section 13) would have writeNumSections=14.
+        assertThat(runningPacket[3]).isEqualTo(0x02.toByte())
+    }
+
     // --- Handshake failure ---
 
     @Test
@@ -385,13 +462,14 @@ class V1SessionTest {
         val session = createSession(this)
 
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
+            transport.emitIncoming(buildDeviceInfoResponse(sw = 75))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildDeviceInfoResponseWithSw(75))
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             // No security response needed
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         session.start()
@@ -635,20 +713,21 @@ class V1SessionTest {
         assertThat(data.avgSplitTime).isEqualTo(115)
     }
 
-    // --- SUPPORTED_DEVICES ---
+    // --- Equipment device identification (from DeviceInfo byte 0) ---
 
     @Test
-    fun `handshake detects treadmill from supported devices`() = runTest {
+    fun `handshake detects equipment device from DeviceInfo`() = runTest {
         val session = createSession(this)
 
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse(2, 4, 0x42)) // MAIN, TREADMILL, GRADE
+            transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         session.start()
@@ -656,21 +735,22 @@ class V1SessionTest {
 
         assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
         assertThat(session.capabilities).isNotNull()
-        assertThat(session.capabilities!!.equipmentDeviceId).isEqualTo(4)
+        assertThat(session.capabilities!!.equipmentDeviceId).isEqualTo(V1Message.DEVICE_TREADMILL)
     }
 
     @Test
-    fun `handshake defaults to FITNESS_BIKE when no equipment device in list`() = runTest {
+    fun `handshake defaults to FITNESS_BIKE when DeviceInfo reports an implausible device`() = runTest {
         val session = createSession(this)
 
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse(2, 3, 0x42)) // MAIN, PORTAL, GRADE
+            transport.emitIncoming(buildDeviceInfoResponse(deviceId = 0)) // NONE — not a real equipment id
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         session.start()
@@ -703,17 +783,6 @@ class V1SessionTest {
         val header = byteArrayOf(0x08, totalLen.toByte(), 0x02, 0x02) // status=DONE
         val withoutChecksum = header + fieldData
         return withoutChecksum + V1Codec.checksum(withoutChecksum)
-    }
-
-    private fun buildDeviceInfoResponseWithSw(sw: Int): ByteArray {
-        val data = byteArrayOf(
-            0x02, 0x0F, 0x81.toByte(), 0x02,
-            sw.toByte(), 3,
-            0x04, 0x03, 0x02, 0x01,
-            0, 0,
-            1, 0,
-        )
-        return data + V1Codec.checksum(data)
     }
 
     private fun buildDataResponseWithCadence(rpm: Int): ByteArray {
@@ -900,6 +969,18 @@ class V1SessionTest {
 
     private fun createUnstartedSession(): V1Session =
         V1Session(transport, logger, TestScope().backgroundScope, buildDeviceInfo(maxResistance = 24))
+
+    @Test
+    fun `commandToFields SetResistance scales the raw value`() {
+        val session = createUnstartedSession() // maxResistance = 24
+        // GlassOS ResistanceConverter: scale = 10000/24 ≈ 416.67; raw = round(level*scale) - 1, clamped ≥ 0.
+        assertThat(session.commandToFields(DeviceCommand.SetResistance(0)))
+            .containsExactly(V1DataField.RESISTANCE, 0f)
+        assertThat(session.commandToFields(DeviceCommand.SetResistance(12)))
+            .containsExactly(V1DataField.RESISTANCE, 4999f)
+        assertThat(session.commandToFields(DeviceCommand.SetResistance(24)))
+            .containsExactly(V1DataField.RESISTANCE, 9999f)
+    }
 
     @Test
     fun `commandToFields SetIncline rounds to 0_5 percent step`() {

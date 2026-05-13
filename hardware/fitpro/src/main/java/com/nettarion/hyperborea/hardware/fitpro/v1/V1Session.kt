@@ -12,6 +12,7 @@ import com.nettarion.hyperborea.hardware.fitpro.session.FitProSession
 import com.nettarion.hyperborea.hardware.fitpro.session.PowerEstimator
 import com.nettarion.hyperborea.hardware.fitpro.session.SessionState
 import com.nettarion.hyperborea.hardware.fitpro.transport.HidTransport
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -29,6 +30,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 class V1Session(
     private val transport: HidTransport,
@@ -77,6 +79,9 @@ class V1Session(
     private var model: Int = 0
     private var masterLibraryVersion: Int = 0
 
+    /** Bitfield indices ([V1DataField.fieldIndex]) the device declared it supports; empty if it couldn't be read. */
+    private var supportedBitFields: Set<Int> = emptySet()
+
     override suspend fun start() {
         if (_sessionState.value is SessionState.Streaming || _sessionState.value is SessionState.Connecting) return
 
@@ -88,25 +93,15 @@ class V1Session(
             transport.clearBuffer()
             handshake()
 
+            // Console init (done while still in IDLE), then bring the workout up the way the
+            // console firmware expects: IDLE → WARM_UP → RUNNING, confirming each step.
+            prepareConsole()
             accumulator.start()
+            transitionToRunning()
+
             _sessionState.value = SessionState.Streaming
-
             startPollLoop()
-
             logger.i(TAG, "V1 session started")
-
-            // Enter RUNNING mode, signal workout start, and disable idle
-            // lockout so the bike doesn't auto-pause when pedaling stops.
-            // REQUIRE_START_REQUESTED tells the MCU to begin its workout
-            // session so CURRENT_TIME/DISTANCE/CALORIES start counting.
-            pendingWriteMutex.withLock {
-                pendingWriteFields = mapOf(
-                    V1DataField.WORKOUT_MODE to WORKOUT_MODE_RUNNING,
-                    V1DataField.REQUIRE_START_REQUESTED to 1f,
-                    V1DataField.IDLE_MODE_LOCKOUT to 1f,
-                )
-            }
-            logger.i(TAG, "Entered RUNNING workout mode")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -128,7 +123,7 @@ class V1Session(
                 // Write WORKOUT_MODE=IDLE before disconnecting — fire-and-forget,
                 // don't wait for responses since we're tearing down.
                 val idleMsg = V1Message.Outgoing.ReadWriteData(
-                    writeFields = mapOf(V1DataField.WORKOUT_MODE to WORKOUT_MODE_IDLE),
+                    writeFields = mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.IDLE.raw),
                 )
                 transport.write(V1Codec.encode(idleMsg).first())
                 delay(COMMAND_DELAY_MS)
@@ -229,10 +224,10 @@ class V1Session(
             )
         }
         is DeviceCommand.PauseWorkout -> {
-            mapOf(V1DataField.WORKOUT_MODE to WORKOUT_MODE_PAUSE)
+            mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.PAUSE.raw)
         }
         is DeviceCommand.ResumeWorkout -> {
-            mapOf(V1DataField.WORKOUT_MODE to WORKOUT_MODE_RUNNING)
+            mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.RUNNING.raw)
         }
         is DeviceCommand.CalibrateIncline -> emptyMap()
         is DeviceCommand.SetFanSpeed -> mapOf(V1DataField.FAN_STATE to command.level.toFloat())
@@ -242,32 +237,36 @@ class V1Session(
         is DeviceCommand.SetWarmupTimeout -> mapOf(V1DataField.WARMUP_TIMEOUT to command.seconds.toFloat())
         is DeviceCommand.SetCooldownTimeout -> mapOf(V1DataField.COOLDOWN_TIMEOUT to command.seconds.toFloat())
         is DeviceCommand.SetPauseTimeout -> mapOf(V1DataField.PAUSE_TIMEOUT to command.seconds.toFloat())
-        is DeviceCommand.SetWarmUpMode -> mapOf(V1DataField.WORKOUT_MODE to WORKOUT_MODE_WARM_UP)
-        is DeviceCommand.SetCoolDownMode -> mapOf(V1DataField.WORKOUT_MODE to WORKOUT_MODE_COOL_DOWN)
+        is DeviceCommand.SetWarmUpMode -> mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.WARM_UP.raw)
+        is DeviceCommand.SetCoolDownMode -> mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.COOL_DOWN.raw)
         is DeviceCommand.SetErgMode -> mapOf(V1DataField.IS_CONSTANT_WATTS_MODE to if (command.enable) 1f else 0f)
     }
 
     private suspend fun handshake() {
-        // 0. Query supported devices to find equipment type
-        val supportedDevices = sendAndAwait(V1Message.Outgoing.SupportedDevices())
-        val equipmentDeviceId = if (supportedDevices is V1Message.Incoming.SupportedDevicesResponse) {
-            logger.d(TAG, "Supported devices: ${supportedDevices.deviceIds}")
-            val picked = supportedDevices.deviceIds.firstOrNull { it in V1Message.EQUIPMENT_DEVICE_IDS }
-            if (picked != null) {
-                logger.i(TAG, "Detected equipment device ID: $picked")
-                picked
-            } else {
-                logger.d(TAG, "No equipment device in list, defaulting to FITNESS_BIKE")
-                V1Message.DEVICE_FITNESS_BIKE
-            }
+        // 0. DeviceInfo (from MAIN) → serialNumber, softwareVersion, and the real equipment
+        //    device ID: the MCU echoes its own device type in byte 0 of the response.
+        val deviceInfo = sendAndAwait(V1Message.Outgoing.DeviceInfo())
+        val equipmentDeviceId: Int
+        if (deviceInfo is V1Message.Incoming.DeviceInfoResponse) {
+            softwareVersion = deviceInfo.softwareVersion
+            hardwareVersion = deviceInfo.hardwareVersion
+            serialNumber = deviceInfo.serialNumber
+            supportedBitFields = deviceInfo.supportedBitFields
+            equipmentDeviceId = deviceInfo.deviceId.takeIf { it in V1Message.EQUIPMENT_DEVICE_IDS }
+                ?: V1Message.DEVICE_FITNESS_BIKE
+            logger.i(
+                TAG,
+                "Device info: sw=$softwareVersion, hw=$hardwareVersion, serial=$serialNumber, " +
+                    "equipmentDeviceId=$equipmentDeviceId, supportedBitFields=${supportedBitFields.size}",
+            )
         } else {
-            logger.w(TAG, "SupportedDevices failed, defaulting to FITNESS_BIKE")
-            V1Message.DEVICE_FITNESS_BIKE
+            logger.w(TAG, "Expected DeviceInfoResponse, got: $deviceInfo — defaulting equipment to FITNESS_BIKE")
+            equipmentDeviceId = V1Message.DEVICE_FITNESS_BIKE
         }
 
         delay(COMMAND_DELAY_MS)
 
-        // 1. Connect to detected equipment device
+        // 1. Connect to the equipment device.
         val connectResponse = sendAndAwait(V1Message.Outgoing.Connect(equipmentDeviceId))
             ?: throw IllegalStateException("Connect handshake timed out")
         if (connectResponse !is V1Message.Incoming.ConnectAck) {
@@ -277,15 +276,12 @@ class V1Session(
 
         delay(COMMAND_DELAY_MS)
 
-        // 2. DeviceInfo (from MAIN) → serialNumber, softwareVersion
-        val deviceInfo = sendAndAwait(V1Message.Outgoing.DeviceInfo())
-        if (deviceInfo is V1Message.Incoming.DeviceInfoResponse) {
-            softwareVersion = deviceInfo.softwareVersion
-            hardwareVersion = deviceInfo.hardwareVersion
-            serialNumber = deviceInfo.serialNumber
-            logger.d(TAG, "Device info: sw=$softwareVersion, hw=$hardwareVersion, serial=$serialNumber")
+        // 2. SupportedDevices → the sub-devices/sensors the controller manages (diagnostic only).
+        val supportedDevices = sendAndAwait(V1Message.Outgoing.SupportedDevices())
+        if (supportedDevices is V1Message.Incoming.SupportedDevicesResponse) {
+            logger.d(TAG, "Sub-devices: ${supportedDevices.deviceIds}")
         } else {
-            logger.w(TAG, "Expected DeviceInfoResponse, got: $deviceInfo")
+            logger.w(TAG, "SupportedDevices failed: $supportedDevices")
         }
 
         delay(COMMAND_DELAY_MS)
@@ -354,49 +350,107 @@ class V1Session(
     }
 
     private suspend fun readStartupFields(equipmentDeviceId: Int) {
-        val message = V1Message.Outgoing.ReadWriteData(readFields = V1DataField.startupReadFields)
-        val packets = V1Codec.encode(message)
-        for (packet in packets) {
-            transport.write(packet)
+        val response = sendReadWrite(readFields = V1DataField.startupReadFields)
+        if (response == null || response.status != V1Message.STATUS_DONE || response.fields.isEmpty()) {
+            logger.d(TAG, "Startup field read returned no data: $response")
+            return
         }
+        val fields = response.fields
+        capabilities = V1Capabilities(
+            maxGrade = fields[V1DataField.MAX_GRADE],
+            minGrade = fields[V1DataField.MIN_GRADE],
+            maxKph = fields[V1DataField.MAX_KPH],
+            minKph = fields[V1DataField.MIN_KPH],
+            maxResistance = fields[V1DataField.MAX_RESISTANCE_LEVEL]?.toInt()?.takeIf { it > 0 },
+            equipmentDeviceId = equipmentDeviceId,
+        )
+        logger.i(TAG, "Capabilities: $capabilities")
+        val eqHours = fields[V1DataField.TOTAL_TIME]?.toLong()
+        val eqDist = fields[V1DataField.MOTOR_TOTAL_DISTANCE]
+        _deviceIdentity.value = _deviceIdentity.value?.copy(equipmentHours = eqHours, equipmentDistance = eqDist)
+        logger.i(TAG, "Equipment stats: totalTime=${eqHours}s, totalDistance=$eqDist")
+    }
+
+    /**
+     * Console init, done while the console is still IDLE (before the workout transition): on devices
+     * with a [V1DataField.REQUIRE_START_REQUESTED] bitfield, tell the MCU we'll drive the start
+     * ourselves (via the WORKOUT_MODE transition below); otherwise hold off the idle/auto-pause
+     * timeout ([V1DataField.IDLE_MODE_LOCKOUT]) so a Zwift-style session keeps streaming when the
+     * user briefly stops moving. Mirrors GlassOS's FitPro1 console init (which picks exactly one of
+     * the two from the device's bitfield map and never writes either during a workout).
+     */
+    private suspend fun prepareConsole() {
+        when {
+            // Couldn't read the device's bitfield map — keep the historical behaviour of writing
+            // both, but now un-crammed and while the console is still IDLE (which the MCU expects).
+            supportedBitFields.isEmpty() -> {
+                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, 1f)
+                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, 1f)
+            }
+            V1DataField.REQUIRE_START_REQUESTED.fieldIndex in supportedBitFields ->
+                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, 1f)
+            else ->
+                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, 1f)
+        }
+    }
+
+    private suspend fun writeConsoleField(field: V1DataField, value: Float) {
+        sendReadWrite(writeFields = mapOf(field to value), readFields = setOf(field))
+        delay(COMMAND_DELAY_MS)
+    }
+
+    /**
+     * Brings the console up to the running WORKOUT state the way the firmware expects:
+     * `IDLE → WARM_UP(10) → RUNNING(2)`, confirming each step by reading [V1DataField.WORKOUT_MODE]
+     * back. If the MCU never confirms a step, we log a warning and proceed anyway (a degraded
+     * session beats no session) — that warning is the thing to look for in logs when controls
+     * (resistance / belt speed) don't respond.
+     */
+    private suspend fun transitionToRunning() {
+        writeAndConfirmWorkoutMode(WorkoutMode.WARM_UP) { it != WorkoutMode.IDLE }
+        val running = writeAndConfirmWorkoutMode(WorkoutMode.RUNNING) { it == WorkoutMode.RUNNING }
+        logger.i(TAG, "Console state: IDLE → WARM_UP → ${running ?: WorkoutMode.UNKNOWN}")
+    }
+
+    private suspend fun writeAndConfirmWorkoutMode(target: WorkoutMode, accept: (WorkoutMode) -> Boolean): WorkoutMode? {
+        repeat(STATE_CONFIRM_MAX_ATTEMPTS) { attempt ->
+            // Assert the target on the first attempt; subsequent attempts just poll the read-back.
+            val response = sendReadWrite(
+                writeFields = if (attempt == 0) mapOf(V1DataField.WORKOUT_MODE to target.raw) else emptyMap(),
+                readFields = setOf(V1DataField.WORKOUT_MODE),
+            )
+            val mode = response?.fields?.get(V1DataField.WORKOUT_MODE)?.let { WorkoutMode.fromRaw(it) }
+            if (mode != null && accept(mode)) return mode
+            delay(STATE_CONFIRM_POLL_MS)
+        }
+        logger.w(TAG, "Console didn't reach $target — workout may be inactive; continuing")
+        return null
+    }
+
+    /**
+     * Sends one ReadWriteData (writes [writeFields], requests [readFields]) and decodes the single-
+     * packet response, returning the read field values (or null on no/garbled response). Used for
+     * the startup-field read and the workout-state writes/confirmations — not the poll loop, which
+     * reads the multi-packet [V1DataField.periodicReadFields] via [pollOnce].
+     */
+    private suspend fun sendReadWrite(
+        writeFields: Map<V1DataField, Float> = emptyMap(),
+        readFields: Set<V1DataField> = emptySet(),
+    ): V1Message.Incoming.DataResponse? {
+        val message = V1Message.Outgoing.ReadWriteData(writeFields = writeFields, readFields = readFields)
+        for (packet in V1Codec.encode(message)) transport.write(packet)
         delay(READ_DELAY_MS)
-        val raw = transport.readPacket() ?: return
-
-        // Decode with startupReadFields — the default decoder uses periodicReadFields
-        // which would misinterpret the payload as KPH/GRADE/etc.
-        val trimmed = if (raw.size > 1) {
-            val len = raw[1].toInt() and 0xFF
-            if (len in 3..raw.size) raw.copyOf(len) else raw
-        } else raw
-
-        if (trimmed.size < 5) return
+        val raw = readPacketOrNull() ?: return null
+        // USB returns 64-byte packets padded with 0xFF — trim to the declared length.
+        val trimmed = raw.takeIf { it.size > 1 }?.let { p ->
+            val len = p[1].toInt() and 0xFF
+            if (len in 3..p.size) p.copyOf(len) else p
+        } ?: raw
+        if (trimmed.size < 5 || trimmed[2] != READ_WRITE_DATA_CMD) return null
         val status = trimmed[3].toInt() and 0xFF
         val payload = trimmed.copyOfRange(4, trimmed.size - 1)
-        val response = V1Codec.decodeDataResponse(status, payload, V1DataField.startupReadFields)
-        if (response is V1Message.Incoming.DataResponse && response.status == V1Message.STATUS_DONE) {
-            val fields = response.fields
-            if (fields.isNotEmpty()) {
-                capabilities = V1Capabilities(
-                    maxGrade = fields[V1DataField.MAX_GRADE],
-                    minGrade = fields[V1DataField.MIN_GRADE],
-                    maxKph = fields[V1DataField.MAX_KPH],
-                    minKph = fields[V1DataField.MIN_KPH],
-                    maxResistance = fields[V1DataField.MAX_RESISTANCE_LEVEL]?.toInt()?.takeIf { it > 0 },
-                    equipmentDeviceId = equipmentDeviceId,
-                )
-                logger.i(TAG, "Capabilities: $capabilities")
-
-                val eqHours = fields[V1DataField.TOTAL_TIME]?.toLong()
-                val eqDist = fields[V1DataField.MOTOR_TOTAL_DISTANCE]
-                _deviceIdentity.value = _deviceIdentity.value?.copy(
-                    equipmentHours = eqHours,
-                    equipmentDistance = eqDist,
-                )
-                logger.i(TAG, "Equipment stats: totalTime=${eqHours}s, totalDistance=$eqDist")
-            }
-        } else {
-            logger.d(TAG, "Startup field read: $response")
-        }
+        val decoded = V1Codec.decodeDataResponse(status, payload, readFields.ifEmpty { V1DataField.periodicReadFields })
+        return decoded as? V1Message.Incoming.DataResponse
     }
 
     private fun startPollLoop() {
@@ -457,6 +511,7 @@ class V1Session(
 
         delay(READ_DELAY_MS)
 
+        // No timeout here on purpose: the poll loop is steady-state and just waits for the next reply.
         val firstPacket = transport.readPacket()
         if (firstPacket == null) {
             if (writeFields.isNotEmpty()) {
@@ -543,12 +598,13 @@ class V1Session(
                     val mode = value.toInt()
                     val previousMode = accumulator.snapshot().workoutMode
                     if (previousMode != mode) {
-                        when (mode) {
-                            WORKOUT_MODE_PAUSE.toInt() -> accumulator.pause()
-                            WORKOUT_MODE_RUNNING.toInt() -> {
+                        when (WorkoutMode.fromRaw(mode)) {
+                            WorkoutMode.PAUSE -> accumulator.pause()
+                            WorkoutMode.RUNNING -> {
                                 accumulator.resume()
                                 accumulator.startTimer()
                             }
+                            else -> {}
                         }
                     }
                     accumulator.updateWorkoutMode(mode)
@@ -673,14 +729,15 @@ class V1Session(
     }
 
     private suspend fun sendAndAwait(message: V1Message.Outgoing): V1Message.Incoming? {
-        val packets = V1Codec.encode(message)
-        for (packet in packets) {
-            transport.write(packet)
-        }
+        for (packet in V1Codec.encode(message)) transport.write(packet)
         delay(READ_DELAY_MS)
-        val firstPacket = transport.readPacket() ?: return null
+        val firstPacket = readPacketOrNull() ?: return null
         return readResponse(firstPacket)
     }
+
+    /** [transport.readPacket] with a safety timeout — a non-responsive MCU must not hang the session. */
+    private suspend fun readPacketOrNull(): ByteArray? =
+        withTimeoutOrNull(RESPONSE_TIMEOUT_MS) { transport.readPacket() }
 
     private suspend fun readResponse(firstPacket: ByteArray): V1Message.Incoming? {
         if (V1Codec.isMultiPacketHeader(firstPacket)) {
@@ -698,17 +755,16 @@ class V1Session(
     private fun roundToStep(value: Float, step: Float): Float =
         (value / step).roundToInt() * step
 
-    // ResistanceConverter: raw = max(0, level * ratio - 1)
-    private val resistanceRatio = 10000 / deviceInfo.maxResistance
+    // ResistanceConverter (GlassOS): scale = 10000 / maxResistance (a fraction — use float math);
+    // raw = round(level * scale) - 1, clamped ≥ 0; level = ceil(raw / scale).
+    private val resistanceScale: Double =
+        if (deviceInfo.maxResistance > 0) 10000.0 / deviceInfo.maxResistance else 1.0
 
     private fun resistanceLevelToRaw(level: Int): Int =
-        maxOf(0, level * resistanceRatio - 1)
+        maxOf(0, (level * resistanceScale).roundToInt() - 1)
 
-    // ResistanceConverter: level = ceil(raw / ratio)
-    private fun resistanceRawToLevel(raw: Int): Int {
-        val remainder = raw % resistanceRatio
-        return raw / resistanceRatio + if (remainder != 0) 1 else 0
-    }
+    private fun resistanceRawToLevel(raw: Int): Int =
+        ceil(raw / resistanceScale).toInt()
 
 
     companion object {
@@ -716,14 +772,18 @@ class V1Session(
         private const val POLL_INTERVAL_MS = 100L
         private const val COMMAND_DELAY_MS = 100L
         private const val READ_DELAY_MS = 0L
+        // Safety timeout for a single MCU response — it normally replies immediately; if it ever
+        // doesn't, fail/degrade gracefully instead of hanging the session.
+        private const val RESPONSE_TIMEOUT_MS = 1000L
         private const val MAX_CONSECUTIVE_POLL_ERRORS = 10
         private const val CALIBRATION_POLL_MS = 4000L // 4-second poll interval during calibration
         private const val MAX_CALIBRATION_ATTEMPTS = 60 // 4-minute timeout at 4s intervals
-        private const val WORKOUT_MODE_IDLE = 1f
-        private const val WORKOUT_MODE_RUNNING = 2f
-        private const val WORKOUT_MODE_PAUSE = 3f
-        private const val WORKOUT_MODE_WARM_UP = 10f
-        private const val WORKOUT_MODE_COOL_DOWN = 11f
+
+        // Confirming a WORKOUT_MODE transition: re-read WORKOUT_MODE every 150 ms for up to ~5 s.
+        private const val STATE_CONFIRM_POLL_MS = 150L
+        private const val STATE_CONFIRM_MAX_ATTEMPTS = 34
+
+        private const val READ_WRITE_DATA_CMD: Byte = 0x02
 
         // KEY_OBJECT key codes for the console-keypad buttons we forward.
         private const val KEY_SPEED_UP = 3

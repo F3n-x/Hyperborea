@@ -294,6 +294,27 @@ class V1CodecTest {
         assertThat(info.softwareVersion).isEqualTo(80)
         assertThat(info.hardwareVersion).isEqualTo(3)
         assertThat(info.serialNumber).isEqualTo(0x01020304)
+        assertThat(info.supportedBitFields).isEmpty() // sectionCount=1, mask byte=0 → no bitfields declared
+    }
+
+    @Test
+    fun `decode DeviceInfoResponse parses supported bitfields from the section mask`() {
+        // sectionCount=14, mask declares bitfield 12 (section 1, bit 4) and 108 (section 13, bit 4).
+        val mask = ByteArray(14)
+        mask[1] = 0x10
+        mask[13] = 0x10
+        val body = byteArrayOf(
+            0x07, 0, 0x81.toByte(), 0x02, // [1] = length, filled in below
+            80, 3,
+            0x04, 0x03, 0x02, 0x01,
+            0, 0,
+            14, // sectionCount
+        ) + mask
+        body[1] = (body.size + 1).toByte()
+        val packet = body + V1Codec.checksum(body)
+        val info = V1Codec.decodeSingle(packet) as V1Message.Incoming.DeviceInfoResponse
+        assertThat(info.deviceId).isEqualTo(V1Message.DEVICE_FITNESS_BIKE)
+        assertThat(info.supportedBitFields).containsExactly(12, 108)
     }
 
     @Test

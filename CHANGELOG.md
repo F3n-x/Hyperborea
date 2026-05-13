@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- **Fix workouts not starting on newer ICON consoles** (e.g. some S22i revisions, the 2950 treadmill): the FitPro V1 session now brings the console up through the state path the firmware expects — `IDLE → WARM_UP → RUNNING`, confirming each step by reading the workout-mode field back — instead of jumping straight to `RUNNING` and cramming the console-init fields (`REQUIRE_START_REQUESTED`, `IDLE_MODE_LOCKOUT`) into that same packet. On stricter firmware the old shortcut left the console parked in a ready-but-not-running sub-state, so resistance (bikes) / belt speed (treadmills) wouldn't respond. The console-init fields are now written separately while the console is still idle (gated on what the device declares it supports, mirroring the stock service); the state transitions are logged (`Console state: IDLE → WARM_UP → RUNNING`). Also fixed a rounding error in the resistance-level↔raw conversion that drifted slightly from the stock firmware's, and a divide-by-zero if a device reports `maxResistance = 0`.
 
 ## [1.2.4] - 2026-05-12
 - Don't surface a USB-permission error on the dashboard at boot: `Orchestrator.probe()` is now passive — it doesn't pop the USB permission dialog or go into an error state when nothing's connecting yet; it just re-probes when the FitPro device becomes accessible (or when the user starts a workout).

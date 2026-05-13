@@ -273,15 +273,16 @@ class FitProAdapterTest {
     fun `connect with product ID 2 uses V1 session`() = runTest {
         val adapter = createAdapter(this, productId = 2)
 
-        // V1 handshake: SupportedDevices → Connect → DeviceInfo → SystemInfo → VersionInfo → Security → Capabilities
+        // V1 handshake: DeviceInfo → Connect → SupportedDevices → SystemInfo → VersionInfo → Security → Capabilities
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         adapter.connect()
@@ -315,13 +316,14 @@ class FitProAdapterTest {
         val adapter = createAdapter(this, productId = 2)
 
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         adapter.connect()
@@ -365,13 +367,14 @@ class FitProAdapterTest {
 
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         adapter.connect()
@@ -387,13 +390,14 @@ class FitProAdapterTest {
         // fakeDeviceConfigRepo is empty by default
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         adapter.connect()
@@ -408,13 +412,14 @@ class FitProAdapterTest {
     fun `refreshDeviceInfo re-resolves with updated config`() = runTest {
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
+            respondToConsoleStartup()
         }
 
         adapter.connect()
@@ -466,15 +471,30 @@ class FitProAdapterTest {
     }
 
     private fun buildDeviceInfoResponse(): ByteArray {
-        // sw=80 (>75, triggers security), hw=3, serial=0x01020304
-        val data = byteArrayOf(
-            0x02, 0x0F, 0x81.toByte(), 0x02,
+        // byte0=FITNESS_BIKE(7) — the device's own equipment type; sw=80 (>75, triggers security),
+        // hw=3, serial=0x01020304; then [sectionCount=14, 14 mask bytes] declaring REQUIRE_START_REQUESTED (idx 108).
+        val mask = ByteArray(14).also { it[13] = 0x10 } // bit 4 of section 13 → bitfield index 108
+        val body = byteArrayOf(
+            0x07, 0, 0x81.toByte(), 0x02,
             80, 3,
             0x04, 0x03, 0x02, 0x01,
             0, 0,
-            1, 0,
-        )
-        return data + V1Codec.checksum(data)
+            14,
+        ) + mask
+        body[1] = (body.size + 1).toByte()
+        return body + V1Codec.checksum(body)
+    }
+
+    /** Responses for prepareConsole() + transitionToRunning() that follow the V1 handshake in start(). */
+    private suspend fun respondToConsoleStartup() {
+        // prepareConsole: REQUIRE_START_REQUESTED write — minimal ReadWriteData ack (status DONE).
+        val ack = byteArrayOf(0x07, 0x05, 0x02, 0x02)
+        transport.emitIncoming(ack + V1Codec.checksum(ack))
+        // transitionToRunning: WARM_UP(10) confirmed, then RUNNING(2) confirmed.
+        for (mode in intArrayOf(10, 2)) {
+            val resp = byteArrayOf(0x07, 0x06, 0x02, 0x02, mode.toByte())
+            transport.emitIncoming(resp + V1Codec.checksum(resp))
+        }
     }
 
     private fun buildSystemInfoResponse(model: Int = 100): ByteArray {
@@ -523,13 +543,14 @@ class FitProAdapterTest {
     fun `capabilities merge includes maxResistance from MCU`() = runTest {
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
-            transport.emitIncoming(buildSupportedDevicesResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse(maxResistance = 30))
+            respondToConsoleStartup()
         }
 
         adapter.connect()

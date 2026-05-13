@@ -40,12 +40,16 @@ sealed interface V1Message {
         data class ConnectAck(val deviceId: Int) : Incoming
         data class DisconnectAck(val deviceId: Int) : Incoming
         data class DeviceInfoResponse(
+            /** The equipment device id the MCU echoes back here (e.g. [DEVICE_FITNESS_BIKE], [DEVICE_TREADMILL]). */
             val deviceId: Int,
             val softwareVersion: Int,
             val hardwareVersion: Int,
             val serialNumber: Int,
+            /** Bitfield indices ([V1DataField.fieldIndex]) the device declares it supports. Empty if it couldn't be parsed. */
+            val supportedBitFields: Set<Int>,
             val raw: ByteArray,
         ) : Incoming {
+            // raw fully determines deviceId/sw/hw/serial/supportedBitFields, so it alone identifies the value.
             override fun equals(other: Any?) = other is DeviceInfoResponse &&
                 deviceId == other.deviceId && raw.contentEquals(other.raw)
             override fun hashCode() = 31 * deviceId + raw.contentHashCode()

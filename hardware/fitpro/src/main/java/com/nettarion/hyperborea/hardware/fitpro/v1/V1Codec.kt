@@ -333,6 +333,9 @@ object V1Codec {
     }
 
     private fun decodeDeviceInfoResponse(deviceId: Int, data: ByteArray): V1Message.Incoming.DeviceInfoResponse {
+        // Layout: [0]device, [1]len, [2]cmd, [3]status, [4]sw, [5]hw, [6..9]serial(LE),
+        //         [10..11]manufacturer, [12]sectionCount, [13..]sectionCount mask bytes, [last]checksum.
+        // Mask bit j of mask byte i ⇒ bitfield index i*8 + j is supported.
         val softwareVersion = if (data.size > 4) data[4].toInt() and 0xFF else 0
         val hardwareVersion = if (data.size > 5) data[5].toInt() and 0xFF else 0
         val serialNumber = if (data.size > 9) {
@@ -341,7 +344,25 @@ object V1Codec {
                 ((data[8].toInt() and 0xFF) shl 16) or
                 ((data[9].toInt() and 0xFF) shl 24)
         } else 0
-        return V1Message.Incoming.DeviceInfoResponse(deviceId, softwareVersion, hardwareVersion, serialNumber, data.copyOf())
+        val supportedBitFields = parseSupportedBitFields(data)
+        return V1Message.Incoming.DeviceInfoResponse(
+            deviceId, softwareVersion, hardwareVersion, serialNumber, supportedBitFields, data.copyOf(),
+        )
+    }
+
+    private fun parseSupportedBitFields(data: ByteArray): Set<Int> {
+        if (data.size <= 12) return emptySet()
+        val sectionCount = data[12].toInt() and 0xFF
+        // Mask bytes occupy [13 .. 12 + sectionCount]; the final byte is the checksum.
+        if (sectionCount <= 0 || 13 + sectionCount > data.size) return emptySet()
+        val supported = mutableSetOf<Int>()
+        for (section in 0 until sectionCount) {
+            val mask = data[13 + section].toInt() and 0xFF
+            for (bit in 0..7) {
+                if (mask and (1 shl bit) != 0) supported.add(section * 8 + bit)
+            }
+        }
+        return supported
     }
 
     private fun decodeSystemInfoResponse(data: ByteArray): V1Message.Incoming.SystemInfoResponse {
