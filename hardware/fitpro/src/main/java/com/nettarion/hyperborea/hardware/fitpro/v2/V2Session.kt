@@ -5,6 +5,7 @@ import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
+import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.hardware.fitpro.session.ExerciseDataAccumulator
 import com.nettarion.hyperborea.hardware.fitpro.session.FitProSession
@@ -52,6 +53,13 @@ class V2Session(
 
     /** Latest [V2FeatureId.WORKOUT_STATE] value reported by the console (raw [V2WorkoutMode] ordinal); null until first event. */
     private val _workoutMode = MutableStateFlow<Float?>(null)
+
+    /**
+     * Default-bike stub for the interface contract. V2 has no equipment-id in its protocol, so a
+     * real device-type derivation comes in a follow-up that wires it up to the supported-features
+     * heuristic. V1 already populates this from its `Connect` device-id response.
+     */
+    override val detectedDeviceType: DeviceType = DeviceType.BIKE
 
     private var heartbeatJob: Job? = null
     private var receiveJob: Job? = null

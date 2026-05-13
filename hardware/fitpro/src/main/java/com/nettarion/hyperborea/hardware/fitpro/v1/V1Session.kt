@@ -5,6 +5,7 @@ import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
+import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.hardware.fitpro.session.DeviceDatabase
 import com.nettarion.hyperborea.hardware.fitpro.session.ExerciseDataAccumulator
@@ -86,6 +87,19 @@ class V1Session(
     private var supportedBitFields: Set<Int> = emptySet()
 
     /**
+     * Equipment type as detected from the MCU's own `Connect` device-id response. The constructor's
+     * [deviceInfo] arrives here from [com.nettarion.hyperborea.hardware.fitpro.session.DeviceDatabase.fromProductId],
+     * which only knows the USB product id and defaults [DeviceType.BIKE] for every FitPro device —
+     * so its `.type` cannot be trusted during [prepareConsole]/[transitionToActive]. The MCU's
+     * equipment id, captured in [handshake] and mapped via [DeviceDatabase.deviceTypeFromEquipmentId],
+     * is the ground truth at this stage. [com.nettarion.hyperborea.hardware.fitpro.FitProAdapter]
+     * reads this back through [FitProSession.detectedDeviceType] after [start] returns and uses it
+     * to refine the adapter-level [DeviceInfo.type].
+     */
+    override var detectedDeviceType: DeviceType = DeviceType.BIKE
+        private set
+
+    /**
      * The actual set we poll for each loop iteration, narrowed to what the device claims to support.
      * Filtering matters because [V1Codec.decodeDataResponseForFields] decodes the response as a flat
      * blob in field-index order with no per-field presence check, so asking for a field the MCU
@@ -109,10 +123,11 @@ class V1Session(
             handshake()
 
             // Console init (done while still in IDLE), then bring the workout up the way the
-            // console firmware expects: IDLE → WARM_UP → RUNNING, confirming each step.
+            // console firmware expects (device-type-dependent — treadmills stop at WARM_UP and
+            // wait for the physical Start key, see transitionToActive).
             prepareConsole()
             accumulator.start()
-            transitionToRunning()
+            transitionToActive()
 
             _sessionState.value = SessionState.Streaming
             startPollLoop()
@@ -278,6 +293,8 @@ class V1Session(
             logger.w(TAG, "Expected DeviceInfoResponse, got: $deviceInfo — defaulting equipment to FITNESS_BIKE")
             equipmentDeviceId = V1Message.DEVICE_FITNESS_BIKE
         }
+        detectedDeviceType = DeviceDatabase.deviceTypeFromEquipmentId(equipmentDeviceId)
+        logger.d(TAG, "Detected device type: $detectedDeviceType")
 
         delay(COMMAND_DELAY_MS)
 
@@ -387,25 +404,31 @@ class V1Session(
     }
 
     /**
-     * Console init, done while the console is still IDLE (before the workout transition): on devices
-     * with a [V1DataField.REQUIRE_START_REQUESTED] bitfield, tell the MCU we'll drive the start
-     * ourselves (via the WORKOUT_MODE transition below); otherwise hold off the idle/auto-pause
-     * timeout ([V1DataField.IDLE_MODE_LOCKOUT]) so a Zwift-style session keeps streaming when the
-     * user briefly stops moving. Mirrors GlassOS's FitPro1 console init (which picks exactly one of
-     * the two from the device's bitfield map and never writes either during a workout).
+     * Console init, done while the console is still IDLE (before the workout transition).
+     * Branches by device type:
+     *
+     * - **Treadmill / incline trainer**: only `REQUIRE_START_REQUESTED` is asserted, and even that
+     *   only if the device supports the bitfield. `IDLE_MODE_LOCKOUT` is deliberately left alone —
+     *   on a belt-driven machine the MCU itself gates belt motion on the physical Start key, and
+     *   locking out idle-mode on top of that would fight the safety interlock.
+     * - **Bike / elliptical / rower**: both `REQUIRE_START_REQUESTED` and `IDLE_MODE_LOCKOUT` are
+     *   asserted (if supported). `IDLE_MODE_LOCKOUT=ENABLED` here keeps a Zwift-style session
+     *   streaming when the rider briefly stops pedalling — without it the MCU auto-pauses the
+     *   workout. [transitionToActive] re-disables it immediately before writing
+     *   `WORKOUT_MODE=RUNNING`, which the firmware requires.
      */
     private suspend fun prepareConsole() {
-        when {
-            // Couldn't read the device's bitfield map — keep the historical behaviour of writing
-            // both, but now un-crammed and while the console is still IDLE (which the MCU expects).
-            supportedBitFields.isEmpty() -> {
-                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, FIELD_ENABLED)
-                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, FIELD_ENABLED)
-            }
-            V1DataField.REQUIRE_START_REQUESTED.fieldIndex in supportedBitFields ->
-                writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, FIELD_ENABLED)
-            else ->
-                writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, FIELD_ENABLED)
+        val isTreadmill = detectedDeviceType == DeviceType.TREADMILL
+        val supportsRequireStart = supportedBitFields.isEmpty() ||
+            V1DataField.REQUIRE_START_REQUESTED.fieldIndex in supportedBitFields
+        val supportsIdleLockout = supportedBitFields.isEmpty() ||
+            V1DataField.IDLE_MODE_LOCKOUT.fieldIndex in supportedBitFields
+
+        if (supportsRequireStart) {
+            writeConsoleField(V1DataField.REQUIRE_START_REQUESTED, FIELD_ENABLED)
+        }
+        if (!isTreadmill && supportsIdleLockout) {
+            writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, FIELD_ENABLED)
         }
     }
 
@@ -446,13 +469,39 @@ class V1Session(
     }
 
     /**
-     * Brings the console up to the running WORKOUT state the way the firmware expects:
-     * `IDLE → WARM_UP(10) → RUNNING(2)`, confirming each step by reading [V1DataField.WORKOUT_MODE]
-     * back. If the MCU never confirms a step, we log a warning and proceed anyway (a degraded
-     * session beats no session) — that warning is the thing to look for in logs when controls
-     * (resistance / belt speed) don't respond.
+     * Brings the console up to the workout-active state the way the firmware expects. Two paths,
+     * because treadmills and aerobic machines have fundamentally different start safety:
+     *
+     * - **Treadmill / incline trainer**: arm the console in WARM_UP and stop. Writing
+     *   `WORKOUT_MODE=RUNNING` from the app does *not* move the belt — the MCU gates belt motion
+     *   on a rising edge of the read-only `START_REQUESTED` telemetry (set when the user presses
+     *   the physical Start key). Writing RUNNING anyway would just time out the confirmation poll
+     *   and surface as a (semantically wrong) "console didn't confirm the workout started"
+     *   degraded warning. Instead, the orchestrator parks in
+     *   [com.nettarion.hyperborea.core.orchestration.OrchestratorState.AwaitingConsoleStart] and
+     *   the running [pollOnce] loop picks up `WORKOUT_MODE=RUNNING` once the MCU completes the
+     *   transition.
+     * - **Bike / elliptical / rower**: drive the state machine ourselves —
+     *   `IDLE → WARM_UP(10) → RUNNING(2)` with confirmation polling. `IDLE_MODE_LOCKOUT` must be
+     *   disabled immediately before writing RUNNING (the firmware refuses the RUNNING transition
+     *   while idle-mode is locked, even though we needed it locked through [prepareConsole] for
+     *   the streaming-without-auto-pause behaviour). If the MCU never confirms a step we log a
+     *   warning and continue degraded — that warning is the thing to look for in logs when
+     *   resistance / speed controls don't respond.
      */
-    private suspend fun transitionToRunning() {
+    private suspend fun transitionToActive() {
+        if (detectedDeviceType == DeviceType.TREADMILL) {
+            val mode = writeAndConfirmWorkoutMode(WorkoutMode.WARM_UP) { it != WorkoutMode.IDLE }
+            logger.i(TAG, "Console state: IDLE → ${mode ?: WorkoutMode.UNKNOWN} (awaiting physical Start key)")
+            _degradedReason.value = null
+            return
+        }
+
+        val supportsIdleLockout = supportedBitFields.isEmpty() ||
+            V1DataField.IDLE_MODE_LOCKOUT.fieldIndex in supportedBitFields
+        if (supportsIdleLockout) {
+            writeConsoleField(V1DataField.IDLE_MODE_LOCKOUT, FIELD_DISABLED)
+        }
         writeAndConfirmWorkoutMode(WorkoutMode.WARM_UP) { it != WorkoutMode.IDLE }
         val running = writeAndConfirmWorkoutMode(WorkoutMode.RUNNING) { it == WorkoutMode.RUNNING }
         logger.i(TAG, "Console state: IDLE → WARM_UP → ${running ?: WorkoutMode.UNKNOWN}")
@@ -707,8 +756,10 @@ class V1Session(
     /**
      * Emits a [ConsoleKey] on each fresh press of the console membrane keypad. KEY_OBJECT reports the
      * *currently-pressed* key (and 0 on release), so we edge-detect: emit when the code changes to a
-     * new non-zero value. The equipment's own MCU acts on the resistance/incline/speed keys directly,
-     * so we don't drive anything from this — it's exposed for the UI (and diagnostics) only.
+     * new non-zero value. The equipment's own MCU acts on every one of these keys directly (changing
+     * resistance/incline/speed, transitioning the workout state machine on START/STOP, etc.) and the
+     * new state flows up through normal polling — so we don't drive anything from this stream, it's
+     * pure UI / diagnostic plumbing.
      */
     private fun handleKeyObject(keyObject: KeyObject?) {
         val code = keyObject?.code ?: 0
@@ -721,6 +772,8 @@ class V1Session(
     }
 
     private fun fitProKeyToConsoleKey(code: Int): ConsoleKey? = when (code) {
+        KEY_START -> ConsoleKey.START
+        KEY_STOP -> ConsoleKey.STOP
         KEY_SPEED_UP -> ConsoleKey.SPEED_UP
         KEY_SPEED_DOWN -> ConsoleKey.SPEED_DOWN
         KEY_INCLINE_UP -> ConsoleKey.INCLINE_UP
@@ -729,7 +782,7 @@ class V1Session(
         // selector and there's no separate "gear" the app tracks.
         KEY_RESISTANCE_UP, KEY_GEAR_UP -> ConsoleKey.RESISTANCE_UP
         KEY_RESISTANCE_DOWN, KEY_GEAR_DOWN -> ConsoleKey.RESISTANCE_DOWN
-        else -> null // stop / fan / volume / etc. — not mapped (yet)
+        else -> null // fan / volume / etc. — not mapped (yet)
     }
 
     private fun estimatePowerIfNeeded() {
@@ -827,10 +880,16 @@ class V1Session(
         private const val STATE_CONFIRM_POLL_MS = 150L
         private const val STATE_CONFIRM_TIMEOUT_MS = 5_000L
 
-        // Console-init field values: 1 = ENABLED (REQUIRE_START_REQUESTED) / LOCKED (IDLE_MODE_LOCKOUT).
+        // Console-init field values: 1 = ENABLED (REQUIRE_START_REQUESTED) / LOCKED (IDLE_MODE_LOCKOUT),
+        // 0 = DISABLED / UNLOCKED.
         private const val FIELD_ENABLED = 1f
+        private const val FIELD_DISABLED = 0f
 
-        // KEY_OBJECT key codes for the console-keypad buttons we forward.
+        // KEY_OBJECT key codes for the console-keypad buttons we surface as [ConsoleKey] events.
+        // Hyperborea acts on none of them directly — the MCU does the work and the resulting
+        // state flows up through the WORKOUT_MODE poll.
+        private const val KEY_STOP = 1
+        private const val KEY_START = 2
         private const val KEY_SPEED_UP = 3
         private const val KEY_SPEED_DOWN = 4
         private const val KEY_INCLINE_UP = 5

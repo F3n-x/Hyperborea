@@ -247,14 +247,26 @@ class V1SessionTest {
     }
 
     /**
-     * Responses for the post-handshake part of start(): prepareConsole() writes one field
-     * (REQUIRE_START_REQUESTED, since [buildDeviceInfoResponse] declares it), then transitionToRunning()
-     * writes WORKOUT_MODE=WARM_UP and confirms, then WORKOUT_MODE=RUNNING and confirms.
+     * Responses for the post-handshake part of start() on a non-treadmill device: prepareConsole()
+     * writes REQUIRE_START_REQUESTED (since [buildDeviceInfoResponse] declares it but not
+     * IDLE_MODE_LOCKOUT), then transitionToActive() writes WORKOUT_MODE=WARM_UP, confirms, writes
+     * WORKOUT_MODE=RUNNING, and confirms. (If IDLE_MODE_LOCKOUT were declared too, transitionToActive
+     * would also issue an unlock write before RUNNING — see [respondToBikeConsoleStartupWithLockout].)
      */
     private suspend fun respondToConsoleStartup() {
         transport.emitIncoming(buildReadWriteAck())         // prepareConsole: REQUIRE_START_REQUESTED write
-        transport.emitIncoming(buildWorkoutModeAck(10))     // transitionToRunning: WARM_UP confirmed
-        transport.emitIncoming(buildWorkoutModeAck(2))      // transitionToRunning: RUNNING confirmed
+        transport.emitIncoming(buildWorkoutModeAck(10))     // transitionToActive: WARM_UP confirmed
+        transport.emitIncoming(buildWorkoutModeAck(2))      // transitionToActive: RUNNING confirmed
+    }
+
+    /**
+     * Treadmill variant: transitionToActive() only writes WORKOUT_MODE=WARM_UP and waits there —
+     * the MCU itself drives the WARM_UP → RUNNING transition once the physical Start key is pressed
+     * (see [V1Session.transitionToActive]). So only two acks: REQUIRE_START_REQUESTED, WARM_UP.
+     */
+    private suspend fun respondToTreadmillConsoleStartup() {
+        transport.emitIncoming(buildReadWriteAck())         // prepareConsole: REQUIRE_START_REQUESTED write
+        transport.emitIncoming(buildWorkoutModeAck(10))     // transitionToActive: WARM_UP confirmed
     }
 
     /** A minimal ReadWriteData response — status DONE, empty payload (the caller ignores the value). */
@@ -279,6 +291,22 @@ class V1SessionTest {
         if (this[3] != 0x02.toByte() || this[4] != 0x00.toByte() || this[5] != 0x10.toByte()) return null
         return this[6].toInt() and 0xFF
     }
+
+    /**
+     * IDLE_MODE_LOCKOUT (fieldIndex=95 → section 11 bit 7) write detector. writeNumSections=12 and
+     * the section-11 mask byte is 0x80 (everything else zero), data byte at offset 3+12=15.
+     */
+    private fun ByteArray.idleModeLockoutWriteValue(): Int? {
+        if (size < 17 || this[2] != 0x02.toByte()) return null
+        if (this[3] != 0x0C.toByte()) return null
+        // Sections 0..10 mask bytes must be zero, section 11 must be 0x80
+        for (i in 4..14) if (this[i] != 0x00.toByte()) return null
+        if (this[15] != 0x80.toByte()) return null
+        return this[16].toInt() and 0xFF
+    }
+
+    private fun ByteArray.isIdleModeLockoutWrite(): Boolean = idleModeLockoutWriteValue() != null
+    private fun ByteArray.isIdleModeLockoutUnlock(): Boolean = idleModeLockoutWriteValue() == 0
 
     private suspend fun respondWithDataResponse() {
         transport.emitIncoming(buildDataResponsePacket(wattsValue = 180))
@@ -458,6 +486,82 @@ class V1SessionTest {
         assertThat(session.degradedReason.value).isNotNull()
     }
 
+    @Test
+    fun `treadmill start writes REQUIRE_START_REQUESTED and WARM_UP but never IDLE_MODE_LOCKOUT or RUNNING`() = runTest {
+        // The MCU on a treadmill gates belt motion on the physical Start key; writing RUNNING from
+        // the app alone would only time out the confirmation poll and falsely surface as "degraded".
+        // The session must arm at WARM_UP and let the orchestrator wait for the physical key
+        // press to drive the WARM_UP → RUNNING transition via the WORKOUT_MODE poll.
+        val session = createSession(this)
+
+        backgroundScope.launch {
+            transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
+            transport.emitIncoming(buildSystemInfoResponse())
+            transport.emitIncoming(buildVersionInfoResponse())
+            transport.emitIncoming(buildSecurityUnlockedResponse())
+            transport.emitIncoming(buildCapabilityResponse())
+            respondToTreadmillConsoleStartup()
+        }
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        // Critical: we wrote WARM_UP but never RUNNING (the MCU does that on the physical Start key).
+        val workoutModeWrites = transport.writtenPackets.mapNotNull { it.workoutModeWriteValue() }
+        assertThat(workoutModeWrites).containsExactly(10)
+        // And critical: degraded must stay null — "armed and awaiting" is the expected steady state,
+        // not a failure mode.
+        assertThat(session.degradedReason.value).isNull()
+        // And IDLE_MODE_LOCKOUT must never be written on a treadmill — locking idle-mode on a
+        // belt machine fights the MCU's own start-key safety interlock.
+        assertThat(transport.writtenPackets.none { it.isIdleModeLockoutWrite() }).isTrue()
+    }
+
+    @Test
+    fun `bike with IDLE_MODE_LOCKOUT support unlocks before writing RUNNING`() = runTest {
+        // The firmware refuses the WORKOUT_MODE=RUNNING transition while idle-mode is locked
+        // (even though we needed it locked through prepareConsole for streaming-without-auto-pause).
+        // This test asserts the ordering: lockout unlock (=0) comes strictly before the
+        // WORKOUT_MODE=RUNNING write.
+        val session = createSession(this)
+        val bikeWithLockout: Set<Int> = V1DataField.periodicReadFields.map { it.fieldIndex }.toSet() +
+            V1DataField.REQUIRE_START_REQUESTED.fieldIndex +
+            V1DataField.IDLE_MODE_LOCKOUT.fieldIndex
+
+        backgroundScope.launch {
+            transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = bikeWithLockout))
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
+            transport.emitIncoming(buildSystemInfoResponse())
+            transport.emitIncoming(buildVersionInfoResponse())
+            transport.emitIncoming(buildSecurityUnlockedResponse())
+            transport.emitIncoming(buildCapabilityResponse())
+            // prepareConsole writes REQUIRE_START_REQUESTED then IDLE_MODE_LOCKOUT=ENABLED (bike +
+            // both supported). transitionToActive then writes IDLE_MODE_LOCKOUT=DISABLED, WARM_UP,
+            // and RUNNING — four post-handshake acks total.
+            transport.emitIncoming(buildReadWriteAck()) // REQUIRE_START_REQUESTED=ENABLED
+            transport.emitIncoming(buildReadWriteAck()) // IDLE_MODE_LOCKOUT=ENABLED (lockout for streaming)
+            transport.emitIncoming(buildReadWriteAck()) // IDLE_MODE_LOCKOUT=DISABLED (unlock before RUNNING)
+            transport.emitIncoming(buildWorkoutModeAck(10))
+            transport.emitIncoming(buildWorkoutModeAck(2))
+        }
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        // The unlock write must appear before the RUNNING write.
+        val packets = transport.writtenPackets
+        val unlockIdx = packets.indexOfFirst { it.isIdleModeLockoutUnlock() }
+        val runningIdx = packets.indexOfFirst { it.workoutModeWriteValue() == 2 }
+        assertThat(unlockIdx).isGreaterThan(-1)
+        assertThat(runningIdx).isGreaterThan(-1)
+        assertThat(unlockIdx).isLessThan(runningIdx)
+    }
+
     // --- Handshake failure ---
 
     @Test
@@ -620,12 +724,33 @@ class V1SessionTest {
         val collector = backgroundScope.launch { session.consoleKeyPresses.collect { received += it } }
         advanceUntilIdle()
 
-        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(1)) } // STOP — not handled
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(200)) } // VOLUME — not mapped
         advanceTimeBy(200)
         advanceUntilIdle()
 
         collector.cancel()
         assertThat(received).isEmpty()
+    }
+
+    @Test
+    fun `console keypad start and stop codes map to START and STOP ConsoleKeys`() = runTest {
+        val session = startStreamingSession()
+        val received = mutableListOf<ConsoleKey>()
+        val collector = backgroundScope.launch { session.consoleKeyPresses.collect { received += it } }
+        advanceUntilIdle()
+
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(2)) } // START
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(0)) }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        backgroundScope.launch { transport.emitIncoming(buildDataResponseWithKeyCode(1)) } // STOP
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        collector.cancel()
+        assertThat(received).containsExactly(ConsoleKey.START, ConsoleKey.STOP).inOrder()
     }
 
     @Test
@@ -755,7 +880,7 @@ class V1SessionTest {
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
             transport.emitIncoming(buildCapabilityResponse())
-            respondToConsoleStartup()
+            respondToTreadmillConsoleStartup()
         }
 
         session.start()
