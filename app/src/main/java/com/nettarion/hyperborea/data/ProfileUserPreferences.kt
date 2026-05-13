@@ -32,6 +32,9 @@ class ProfileUserPreferences(
     private val _immersiveModeEnabled = MutableStateFlow(prefs.getBoolean(KEY_IMMERSIVE_MODE, true))
     override val immersiveModeEnabled: StateFlow<Boolean> = _immersiveModeEnabled
 
+    private val _useImperial = MutableStateFlow(prefs.getBoolean(KEY_USE_IMPERIAL, true))
+    override val useImperial: StateFlow<Boolean> = _useImperial
+
     override fun setBroadcastEnabled(id: BroadcastId, enabled: Boolean) {
         val current = _enabledBroadcasts.value.toMutableSet()
         if (enabled) current.add(id) else current.remove(id)
@@ -67,6 +70,12 @@ class ProfileUserPreferences(
         logger.i(TAG, "Immersive mode ${if (enabled) "enabled" else "disabled"}")
     }
 
+    override fun setUseImperial(enabled: Boolean) {
+        _useImperial.value = enabled
+        prefs.edit().putBoolean(KEY_USE_IMPERIAL, enabled).apply()
+        logger.i(TAG, "Units set to ${if (enabled) "imperial" else "metric"}")
+    }
+
     private fun loadEnabledBroadcasts(): Set<BroadcastId> {
         val stored = prefs.getStringSet(KEY_ENABLED_BROADCASTS, null) ?: return BroadcastId.entries.toSet()
         return stored.mapNotNull { name ->
@@ -86,5 +95,6 @@ class ProfileUserPreferences(
         const val KEY_SENSOR_ADDRESS = "saved_sensor_address"
         const val KEY_FAN_MODE = "fan_mode"
         const val KEY_IMMERSIVE_MODE = "immersive_mode_enabled"
+        const val KEY_USE_IMPERIAL = "use_imperial"
     }
 }

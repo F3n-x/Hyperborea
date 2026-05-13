@@ -19,11 +19,13 @@ import androidx.compose.ui.unit.dp
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.model.Metric
 import com.nettarion.hyperborea.ui.theme.LocalHyperboreaColors
+import com.nettarion.hyperborea.ui.util.UnitFormatter
 
 @Composable
 fun MetricGrid(
     exerciseData: ExerciseData?,
     supportedMetrics: Set<Metric>?,
+    useImperial: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalHyperboreaColors.current
@@ -81,16 +83,21 @@ fun MetricGrid(
             val secondaryLabelStyle = MaterialTheme.typography.titleMedium
             val secondaryTargetStyle = MaterialTheme.typography.labelMedium
 
+            val speedUnit = if (useImperial) "mph" else "km/h"
             MetricCell(
-                value = exerciseData?.speed?.let { "%.1f".format(it) },
-                unit = "km/h",
+                value = exerciseData?.speed?.let {
+                    "%.1f".format(if (useImperial) it * UnitFormatter.KM_TO_MI else it)
+                },
+                unit = speedUnit,
                 label = "Speed",
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 valueStyle = secondaryValueStyle,
                 unitStyle = secondaryUnitStyle,
                 labelStyle = secondaryLabelStyle,
                 targetStyle = secondaryTargetStyle,
-                target = exerciseData?.targetSpeed?.let { "%.1f".format(it) },
+                target = exerciseData?.targetSpeed?.let {
+                    "%.1f".format(if (useImperial) it * UnitFormatter.KM_TO_MI else it)
+                },
                 supported = isSupported(Metric.SPEED),
             )
             VerticalDivider(thickness = 1.dp, color = colors.divider)
@@ -131,8 +138,10 @@ fun MetricGrid(
             )
             VerticalDivider(thickness = 1.dp, color = colors.divider)
             MetricCell(
-                value = exerciseData?.distance?.let { "%.1f".format(it) },
-                unit = "KM",
+                value = exerciseData?.distance?.let {
+                    "%.1f".format(if (useImperial) it * UnitFormatter.KM_TO_MI else it)
+                },
+                unit = if (useImperial) "MI" else "KM",
                 label = "Distance",
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 valueStyle = secondaryValueStyle,

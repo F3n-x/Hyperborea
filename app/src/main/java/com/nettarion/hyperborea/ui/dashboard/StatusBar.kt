@@ -48,6 +48,7 @@ import com.nettarion.hyperborea.core.adapter.AdapterState
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.orchestration.OrchestratorState
 import com.nettarion.hyperborea.ui.theme.LocalHyperboreaColors
+import com.nettarion.hyperborea.ui.util.UnitFormatter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,6 +61,7 @@ fun StatusBar(
     exerciseData: ExerciseData?,
     profileName: String?,
     deviceName: String?,
+    useImperial: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onPause: () -> Unit,
@@ -131,7 +133,7 @@ fun StatusBar(
             }
 
             // Workout mode badge
-            val controlMode = exerciseData?.controlModeLabel()
+            val controlMode = exerciseData?.controlModeLabel(useImperial)
             if (controlMode != null && (orchestratorState is OrchestratorState.Running || orchestratorState is OrchestratorState.Paused)) {
                 Spacer(Modifier.width(16.dp))
                 Text(
@@ -332,14 +334,19 @@ private fun OrchestratorState.displayText(): String = when (this) {
  * Derives a human-readable control mode label from exercise data.
  * Returns null when no external control is active (manual riding).
  */
-internal fun ExerciseData.controlModeLabel(): String? {
+internal fun ExerciseData.controlModeLabel(useImperial: Boolean): String? {
     // targetPower means ERG mode (Zwift is controlling wattage)
     if (targetPower != null) return "ERG ${targetPower}W"
     // targetIncline means simulation mode (Zwift is controlling gradient)
     if (targetIncline != null) return "SIM ${String.format(Locale.US, "%.1f", targetIncline)}%"
     // targetResistance means direct resistance control
     if (targetResistance != null) return "RES $targetResistance"
-    // targetSpeed means speed control
-    if (targetSpeed != null) return "SPD ${String.format(Locale.US, "%.1f", targetSpeed)} km/h"
+    // targetSpeed means speed control — value flows over the wire in km/h.
+    val tSpeed = targetSpeed
+    if (tSpeed != null) {
+        val display = if (useImperial) tSpeed * UnitFormatter.KM_TO_MI else tSpeed
+        val unit = if (useImperial) "mph" else "km/h"
+        return "SPD ${String.format(Locale.US, "%.1f", display)} $unit"
+    }
     return null
 }

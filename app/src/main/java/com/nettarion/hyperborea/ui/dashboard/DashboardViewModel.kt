@@ -71,8 +71,15 @@ class DashboardViewModel @Inject constructor(
         hardwareAdapter.exerciseData,
         hardwareAdapter.state,
         hardwareAdapter.deviceInfo,
-        combine(systemMonitor.snapshot.map { it.status }, broadcastsFlow, profileRepository.activeProfile, sensorAdapter.state, ::Quad),
-    ) { orchState, exercise, hwState, deviceInfo, (status, broadcasts, profile, sState) ->
+        combine(
+            systemMonitor.snapshot.map { it.status },
+            broadcastsFlow,
+            profileRepository.activeProfile,
+            sensorAdapter.state,
+            userPreferences.useImperial,
+            ::Quint,
+        ),
+    ) { orchState, exercise, hwState, deviceInfo, (status, broadcasts, profile, sState, imperial) ->
         DashboardUiState(
             orchestratorState = orchState,
             exerciseData = exercise,
@@ -82,6 +89,7 @@ class DashboardViewModel @Inject constructor(
             systemStatus = status,
             profileName = profile?.name,
             sensorState = sState,
+            useImperial = imperial,
         )
     }.stateIn(
         viewModelScope,
@@ -93,6 +101,7 @@ class DashboardViewModel @Inject constructor(
             deviceInfo = null,
             broadcasts = emptyList(),
             systemStatus = systemMonitor.snapshot.value.status,
+            useImperial = userPreferences.useImperial.value,
         ),
     )
 
@@ -198,7 +207,13 @@ class DashboardViewModel @Inject constructor(
     }
 }
 
-private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+private data class Quint<A, B, C, D, E>(
+    val first: A,
+    val second: B,
+    val third: C,
+    val fourth: D,
+    val fifth: E,
+)
 
 sealed interface PostSaveEvent {
     data class ViewRide(val rideId: Long) : PostSaveEvent

@@ -8,6 +8,7 @@ import com.nettarion.hyperborea.core.fitfile.FitActivityBuilder
 import com.nettarion.hyperborea.core.model.Profile
 import com.nettarion.hyperborea.core.model.RideSummary
 import com.nettarion.hyperborea.core.profile.ProfileRepository
+import com.nettarion.hyperborea.core.profile.UserPreferences
 import com.nettarion.hyperborea.platform.FitExporter
 import com.nettarion.hyperborea.ui.admin.ExportResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,6 +37,7 @@ data class AggregateStats(
 @HiltViewModel
 class ProfileStatsViewModel @Inject constructor(
     private val profileRepository: ProfileRepository,
+    private val userPreferences: UserPreferences,
     private val logger: AppLogger,
     @param:ApplicationContext private val context: Context,
 ) : ViewModel() {
@@ -43,6 +45,9 @@ class ProfileStatsViewModel @Inject constructor(
     private val fitExporter = FitExporter(context, logger)
 
     val profile: StateFlow<Profile?> = profileRepository.activeProfile
+
+    /** Global units pref. `true` = imperial. */
+    val useImperial: StateFlow<Boolean> = userPreferences.useImperial
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val rideSummaries: StateFlow<List<RideSummary>> = profileRepository.activeProfile

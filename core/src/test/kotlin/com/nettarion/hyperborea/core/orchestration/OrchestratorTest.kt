@@ -771,6 +771,10 @@ class OrchestratorTest {
         override fun setImmersiveModeEnabled(enabled: Boolean) {
             immersiveModeEnabled.value = enabled
         }
+        override val useImperial = MutableStateFlow(true)
+        override fun setUseImperial(enabled: Boolean) {
+            useImperial.value = enabled
+        }
     }
 
     private class FakeSensorAdapter : SensorAdapter {

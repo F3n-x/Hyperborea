@@ -66,6 +66,7 @@ fun ProfileStatsScreen(
     val profile by viewModel.profile.collectAsStateWithLifecycle()
     val rides by viewModel.rideSummaries.collectAsStateWithLifecycle()
     val stats by viewModel.aggregateStats.collectAsStateWithLifecycle()
+    val useImperial by viewModel.useImperial.collectAsStateWithLifecycle()
     val exportResult by viewModel.exportResult.collectAsStateWithLifecycle()
     val colors = LocalHyperboreaColors.current
     val exportSnackbar = rememberExportSnackbarState(exportResult, viewModel::dismissExportResult)
@@ -122,8 +123,8 @@ fun ProfileStatsScreen(
 
                 Spacer(Modifier.height(8.dp))
                 val details = buildList {
-                    p.weightKg?.let { add(UnitFormatter.weightDisplay(it, p.useImperial)) }
-                    p.heightCm?.let { add(UnitFormatter.heightDisplay(it, p.useImperial)) }
+                    p.weightKg?.let { add(UnitFormatter.weightDisplay(it, useImperial)) }
+                    p.heightCm?.let { add(UnitFormatter.heightDisplay(it, useImperial)) }
                     p.age?.let { add("age $it") }
                     p.ftpWatts?.let { add("FTP ${it}W") }
                     p.maxHeartRate?.let { add("MaxHR ${it}bpm") }
@@ -141,9 +142,8 @@ fun ProfileStatsScreen(
             HorizontalDivider(color = colors.divider)
             Spacer(Modifier.height(16.dp))
 
-            val imperial = profile?.useImperial == true
             StatRow("Total Rides", "${stats.totalRides}")
-            StatRow("Total Distance", UnitFormatter.distanceDisplay(stats.totalDistanceKm, imperial))
+            StatRow("Total Distance", UnitFormatter.distanceDisplay(stats.totalDistanceKm, useImperial))
             StatRow("Total Calories", "${stats.totalCalories}")
             StatRow("Total Time", formatDuration(stats.totalTimeSeconds))
 
@@ -188,7 +188,6 @@ fun ProfileStatsScreen(
             if (rides.isEmpty()) {
                 Text("No rides yet", style = MaterialTheme.typography.bodyLarge, color = colors.textMedium)
             } else {
-                val useImperial = profile?.useImperial == true
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     items(rides, key = { it.id }) { ride ->
                         RideRow(

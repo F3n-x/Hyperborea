@@ -11,9 +11,12 @@ interface UserPreferences {
     val savedSensorAddress: StateFlow<String?>
     val fanMode: StateFlow<FanMode>
     val immersiveModeEnabled: StateFlow<Boolean>
+    /** `true` = imperial (mph, mi, lbs, ft/in), `false` = metric. Global, applies to guests too. */
+    val useImperial: StateFlow<Boolean>
     fun setBroadcastEnabled(id: BroadcastId, enabled: Boolean)
     fun setOverlayEnabled(enabled: Boolean)
     fun setSavedSensorAddress(address: String?)
     fun setFanMode(mode: FanMode)
     fun setImmersiveModeEnabled(enabled: Boolean)
+    fun setUseImperial(enabled: Boolean)
 }

@@ -107,6 +107,8 @@ class AdminViewModelTest {
         override fun setFanMode(mode: com.nettarion.hyperborea.core.model.FanMode) {}
         override val immersiveModeEnabled: StateFlow<Boolean> = MutableStateFlow(true)
         override fun setImmersiveModeEnabled(enabled: Boolean) {}
+        override val useImperial: StateFlow<Boolean> = MutableStateFlow(true)
+        override fun setUseImperial(enabled: Boolean) {}
     }
 
     private val fakeSupportClient = object : SupportHttpClient {

@@ -29,7 +29,10 @@ object DatabaseModule {
         context,
         HyperboreaDatabase::class.java,
         "hyperborea.db",
-    ).addMigrations(HyperboreaDatabase.MIGRATION_1_2).build()
+    ).addMigrations(
+        HyperboreaDatabase.MIGRATION_1_2,
+        HyperboreaDatabase.MIGRATION_2_3,
+    ).build()
 
     @Provides
     @Singleton

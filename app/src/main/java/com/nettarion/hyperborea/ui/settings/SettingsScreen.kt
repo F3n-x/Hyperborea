@@ -127,6 +127,7 @@ fun SettingsScreen(
                             adminViewModel = adminViewModel,
                             onConfigureDevice = onConfigureDevice,
                         )
+                        SettingsSection.Display -> DisplaySettingsContent()
                         SettingsSection.About -> AboutSettingsContent(
                             adminViewModel = adminViewModel,
                         )

@@ -16,6 +16,8 @@ data class DashboardUiState(
     val systemStatus: SystemStatus,
     val profileName: String? = null,
     val sensorState: AdapterState = AdapterState.Inactive,
+    /** `true` = mph / mi / lbs / ft, `false` = km/h / km / kg / cm. Default: mph. */
+    val useImperial: Boolean = true,
 )
 
 data class BroadcastUiState(

@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -26,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nettarion.hyperborea.core.model.FanMode
 import com.nettarion.hyperborea.ui.admin.AdminViewModel
 import com.nettarion.hyperborea.ui.admin.CalibrationState
 import com.nettarion.hyperborea.ui.theme.LocalHyperboreaColors
@@ -38,6 +41,7 @@ fun DeviceSettingsContent(
     val colors = LocalHyperboreaColors.current
     val identity by adminViewModel.deviceIdentity.collectAsStateWithLifecycle()
     val calibrationState by adminViewModel.calibrationState.collectAsStateWithLifecycle()
+    val fanMode by adminViewModel.fanMode.collectAsStateWithLifecycle()
     var showCalibrateDialog by remember { mutableStateOf(false) }
     var showCalibrationResult by remember { mutableStateOf(false) }
 
@@ -246,6 +250,48 @@ fun DeviceSettingsContent(
         }
     }
 
+    Spacer(Modifier.height(16.dp))
+    HorizontalDivider(color = colors.divider)
+    Spacer(Modifier.height(16.dp))
+
+    // Fan control
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Fan",
+                style = MaterialTheme.typography.bodyLarge,
+                color = colors.textHigh,
+            )
+            Text(
+                text = "Controls the built-in fan",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.textMedium,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FanModeChip("Off", fanMode == FanMode.OFF) { adminViewModel.setFanMode(FanMode.OFF) }
+            FanModeChip("Auto", fanMode == FanMode.AUTO) { adminViewModel.setFanMode(FanMode.AUTO) }
+            FanModeChip("Wind", fanMode == FanMode.WIND_SIMULATION) { adminViewModel.setFanMode(FanMode.WIND_SIMULATION) }
+        }
+    }
+}
+
+@Composable
+private fun FanModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label, style = MaterialTheme.typography.bodySmall) },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+            selectedLabelColor = MaterialTheme.colorScheme.primary,
+        ),
+    )
 }
 
 @Composable

@@ -8,6 +8,5 @@ data class Profile(
     val age: Int? = null,
     val ftpWatts: Int? = null,
     val maxHeartRate: Int? = null,
-    val useImperial: Boolean = true,
     val createdAt: Long = 0,
 )

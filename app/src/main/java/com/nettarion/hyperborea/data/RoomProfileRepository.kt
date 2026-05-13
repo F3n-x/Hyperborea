@@ -2,7 +2,6 @@ package com.nettarion.hyperborea.data
 
 import androidx.room.withTransaction
 import com.nettarion.hyperborea.core.AppLogger
-import com.nettarion.hyperborea.core.adapter.BroadcastId
 import com.nettarion.hyperborea.core.model.Profile
 import com.nettarion.hyperborea.core.profile.ProfileRepository
 import com.nettarion.hyperborea.core.model.RideSummary
@@ -37,7 +36,6 @@ class RoomProfileRepository(
             age = null,
             ftpWatts = null,
             maxHeartRate = null,
-            enabledBroadcasts = BroadcastId.entries.joinToString(",") { it.name },
             createdAt = System.currentTimeMillis(),
         )
         val id = dao.insert(entity)
@@ -107,7 +105,6 @@ private fun ProfileEntity.toDomain() = Profile(
     age = age,
     ftpWatts = ftpWatts,
     maxHeartRate = maxHeartRate,
-    useImperial = useImperial,
     createdAt = createdAt,
 )
 
@@ -119,8 +116,6 @@ private fun Profile.toEntity(isActive: Boolean) = ProfileEntity(
     age = age,
     ftpWatts = ftpWatts,
     maxHeartRate = maxHeartRate,
-    useImperial = useImperial,
-    enabledBroadcasts = BroadcastId.entries.joinToString(",") { it.name },
     createdAt = createdAt,
     isActive = isActive,
 )

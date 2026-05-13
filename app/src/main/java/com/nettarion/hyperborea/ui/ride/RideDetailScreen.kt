@@ -61,8 +61,8 @@ fun RideDetailScreen(
 
     val summary by viewModel.rideSummary.collectAsStateWithLifecycle()
     val samples by viewModel.samples.collectAsStateWithLifecycle()
-    val profile by viewModel.profile.collectAsStateWithLifecycle()
     val derived by viewModel.derivedMetrics.collectAsStateWithLifecycle()
+    val useImperial by viewModel.useImperial.collectAsStateWithLifecycle()
     val exportResult by viewModel.exportResult.collectAsStateWithLifecycle()
     val colors = LocalHyperboreaColors.current
 
@@ -130,8 +130,6 @@ fun RideDetailScreen(
                         .verticalScroll(rememberScrollState())
                         .padding(20.dp),
                 ) {
-                    val useImperial = profile?.useImperial == true
-
                     Text("Summary", style = MaterialTheme.typography.titleSmall, color = colors.textHigh)
                     Spacer(Modifier.height(12.dp))
 

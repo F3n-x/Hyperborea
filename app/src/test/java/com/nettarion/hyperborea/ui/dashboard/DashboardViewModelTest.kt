@@ -92,6 +92,7 @@ class DashboardViewModelTest {
         override suspend fun refresh() {}
     }
 
+    private val useImperialFlow = MutableStateFlow(true)
     private val fakeUserPreferences = object : UserPreferences {
         override val enabledBroadcasts: StateFlow<Set<BroadcastId>> = this@DashboardViewModelTest.enabledBroadcasts
         override val overlayEnabled: StateFlow<Boolean> = MutableStateFlow(false)
@@ -105,6 +106,10 @@ class DashboardViewModelTest {
         override fun setFanMode(mode: com.nettarion.hyperborea.core.model.FanMode) {}
         override val immersiveModeEnabled: StateFlow<Boolean> = MutableStateFlow(true)
         override fun setImmersiveModeEnabled(enabled: Boolean) {}
+        override val useImperial: StateFlow<Boolean> = useImperialFlow
+        override fun setUseImperial(enabled: Boolean) {
+            useImperialFlow.value = enabled
+        }
     }
 
     private val fakeSensorAdapter = object : SensorAdapter {
@@ -337,6 +342,19 @@ class DashboardViewModelTest {
 
             activeProfile.value = Profile(id = 1, name = "Alice")
             assertThat(awaitItem().profileName).isEqualTo("Alice")
+        }
+    }
+
+    @Test
+    fun `uiState reflects useImperial preference`() = runTest {
+        // Default is mph (imperial), guests included.
+        createViewModel()
+
+        viewModel.uiState.test {
+            assertThat(awaitItem().useImperial).isTrue()
+
+            useImperialFlow.value = false
+            assertThat(awaitItem().useImperial).isFalse()
         }
     }
 

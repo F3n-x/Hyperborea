@@ -85,6 +85,7 @@ fun DashboardScreen(
                 exerciseData = uiState.exerciseData,
                 profileName = uiState.profileName,
                 deviceName = uiState.deviceInfo?.name,
+                useImperial = uiState.useImperial,
                 onStart = viewModel::startBroadcasting,
                 onStop = {
                     if (viewModel.currentElapsedSeconds >= 60) {
@@ -106,6 +107,7 @@ fun DashboardScreen(
             MetricGrid(
                 exerciseData = uiState.exerciseData,
                 supportedMetrics = uiState.deviceInfo?.supportedMetrics,
+                useImperial = uiState.useImperial,
                 modifier = Modifier.weight(1f),
             )
         }

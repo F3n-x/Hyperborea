@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nettarion.hyperborea.core.model.Profile
 import com.nettarion.hyperborea.core.profile.ProfileRepository
+import com.nettarion.hyperborea.core.profile.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,6 +17,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ProfileEditViewModel @Inject constructor(
     private val profileRepository: ProfileRepository,
+    private val userPreferences: UserPreferences,
 ) : ViewModel() {
 
     private val _name = MutableStateFlow("")
@@ -40,8 +42,8 @@ class ProfileEditViewModel @Inject constructor(
     private val _maxHeartRate = MutableStateFlow("")
     val maxHeartRate: StateFlow<String> = _maxHeartRate.asStateFlow()
 
-    private val _useImperial = MutableStateFlow(true)
-    val useImperial: StateFlow<Boolean> = _useImperial.asStateFlow()
+    /** Global units pref. The on-screen toggle writes through to [UserPreferences]. */
+    val useImperial: StateFlow<Boolean> = userPreferences.useImperial
 
     private var editingProfile: Profile? = null
 
@@ -52,7 +54,6 @@ class ProfileEditViewModel @Inject constructor(
             val profile = profiles.find { it.id == profileId } ?: return@launch
             editingProfile = profile
             _name.value = profile.name
-            _useImperial.value = profile.useImperial
             _age.value = profile.age?.toString() ?: ""
             _ftpWatts.value = profile.ftpWatts?.toString() ?: ""
             _maxHeartRate.value = profile.maxHeartRate?.toString() ?: ""
@@ -61,7 +62,7 @@ class ProfileEditViewModel @Inject constructor(
     }
 
     private fun loadBodyFields(profile: Profile) {
-        val imperial = _useImperial.value
+        val imperial = useImperial.value
         _weight.value = profile.weightKg?.let { UnitFormatter.weightEditDisplay(it, imperial) } ?: ""
         if (profile.heightCm != null) {
             val (h, hIn) = UnitFormatter.heightEditFields(profile.heightCm!!, imperial)
@@ -82,11 +83,12 @@ class ProfileEditViewModel @Inject constructor(
     fun setMaxHeartRate(value: String) { _maxHeartRate.value = value }
 
     fun toggleUnits() {
-        // Convert current display values to metric, flip, then reload display
+        // Capture current displayed values in metric *before* flipping the pref,
+        // then reload the display in the new units.
         val weightKg = parseWeightToKg()
         val heightCm = parseHeightToCm()
-        _useImperial.value = !_useImperial.value
-        val imperial = _useImperial.value
+        userPreferences.setUseImperial(!useImperial.value)
+        val imperial = useImperial.value
 
         _weight.value = weightKg?.let { UnitFormatter.weightEditDisplay(it, imperial) } ?: ""
         if (heightCm != null) {
@@ -101,11 +103,11 @@ class ProfileEditViewModel @Inject constructor(
 
     private fun parseWeightToKg(): Float? {
         val v = _weight.value.toFloatOrNull() ?: return null
-        return UnitFormatter.parseWeightToKg(v, _useImperial.value)
+        return UnitFormatter.parseWeightToKg(v, useImperial.value)
     }
 
     private fun parseHeightToCm(): Int? {
-        return if (_useImperial.value) {
+        return if (useImperial.value) {
             val feet = _height.value.toIntOrNull() ?: 0
             val inches = _heightInches.value.toIntOrNull() ?: 0
             if (feet == 0 && inches == 0) null
@@ -141,7 +143,6 @@ class ProfileEditViewModel @Inject constructor(
                         age = _age.value.toIntOrNull(),
                         ftpWatts = _ftpWatts.value.toIntOrNull(),
                         maxHeartRate = _maxHeartRate.value.toIntOrNull(),
-                        useImperial = _useImperial.value,
                     ),
                 )
             } else {
@@ -153,7 +154,6 @@ class ProfileEditViewModel @Inject constructor(
                         age = _age.value.toIntOrNull(),
                         ftpWatts = _ftpWatts.value.toIntOrNull(),
                         maxHeartRate = _maxHeartRate.value.toIntOrNull(),
-                        useImperial = _useImperial.value,
                     ),
                 )
                 profileRepository.setActiveProfile(profile.id)
