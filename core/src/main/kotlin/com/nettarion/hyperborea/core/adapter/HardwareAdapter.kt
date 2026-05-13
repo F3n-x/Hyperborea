@@ -22,6 +22,14 @@ interface HardwareAdapter : Adapter {
     val consoleKeyPresses: Flow<ConsoleKey>
 
     /**
+     * Non-null when the hardware is connected but in a partially-broken state — e.g. the console
+     * didn't confirm the workout started, so resistance/speed control may not respond. The
+     * orchestrator folds this into [com.nettarion.hyperborea.core.orchestration.OrchestratorState.Running.degraded]
+     * so the UI can warn the user. Null when fully healthy or disconnected.
+     */
+    val degradedReason: StateFlow<String?>
+
+    /**
      * Establish a connection to the hardware device.
      *
      * - If the adapter is already [AdapterState.Active] or [AdapterState.Activating], this is a no-op.

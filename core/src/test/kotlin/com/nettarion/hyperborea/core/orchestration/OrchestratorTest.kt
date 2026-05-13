@@ -54,6 +54,15 @@ class OrchestratorTest {
     }
 
     @Test
+    fun `start surfaces the hardware adapter's degraded reason as Running(degraded)`() = runTest {
+        val env = TestEnv(this)
+        env.hardware.degradedReason.value = "console didn't confirm the workout started"
+        env.orchestrator.start()
+        assertThat(env.orchestrator.state.value)
+            .isEqualTo(OrchestratorState.Running(degraded = "console didn't confirm the workout started"))
+    }
+
+    @Test
     fun `start connects hardware`() = runTest {
         val env = TestEnv(this)
         env.orchestrator.start()
@@ -698,6 +707,7 @@ class OrchestratorTest {
         override val exerciseData = MutableStateFlow<ExerciseData?>(null)
         override val deviceIdentity = MutableStateFlow<DeviceIdentity?>(null)
         override val consoleKeyPresses = MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8)
+        override val degradedReason = MutableStateFlow<String?>(null)
         var connectCalled = false
         var connectCallCount = 0
         var disconnectCalled = false

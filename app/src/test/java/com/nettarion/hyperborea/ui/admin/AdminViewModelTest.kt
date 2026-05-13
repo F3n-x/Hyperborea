@@ -85,6 +85,7 @@ class AdminViewModelTest {
         override val deviceInfo = MutableStateFlow<DeviceInfo?>(null)
         override val deviceIdentity = MutableStateFlow<DeviceIdentity?>(null)
         override val consoleKeyPresses: Flow<ConsoleKey> = emptyFlow()
+        override val degradedReason = MutableStateFlow<String?>(null)
         override val prerequisites: List<Prerequisite> = emptyList()
         override fun canOperate(snapshot: SystemSnapshot): Boolean = true
         override suspend fun connect() {}

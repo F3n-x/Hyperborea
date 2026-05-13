@@ -430,6 +430,29 @@ class V1SessionTest {
         assertThat(runningPacket[3]).isEqualTo(0x02.toByte())
     }
 
+    @Test
+    fun `start still reaches Streaming but flags degraded when the console never confirms the workout`() = runTest {
+        val session = createSession(this)
+
+        // Feed the handshake responses but NOT the console-startup ones, so the WORKOUT_MODE
+        // confirmation reads all time out.
+        backgroundScope.launch {
+            transport.emitIncoming(buildDeviceInfoResponse())
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
+            transport.emitIncoming(buildSystemInfoResponse())
+            transport.emitIncoming(buildVersionInfoResponse())
+            transport.emitIncoming(buildSecurityUnlockedResponse())
+            transport.emitIncoming(buildCapabilityResponse())
+        }
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        assertThat(session.degradedReason.value).isNotNull()
+    }
+
     // --- Handshake failure ---
 
     @Test

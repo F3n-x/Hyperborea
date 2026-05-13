@@ -85,11 +85,15 @@ class FitProAdapter @Inject constructor(
         MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val consoleKeyPresses: SharedFlow<ConsoleKey> = _consoleKeyPresses.asSharedFlow()
 
+    private val _degradedReason = MutableStateFlow<String?>(null)
+    override val degradedReason: StateFlow<String?> = _degradedReason.asStateFlow()
+
     private var session: FitProSession? = null
     private var initialElapsedSeconds: Long = 0L
     private var dataForwardJob: Job? = null
     private var identityForwardJob: Job? = null
     private var keyForwardJob: Job? = null
+    private var degradedForwardJob: Job? = null
     private var stateMonitorJob: Job? = null
 
     override suspend fun connect() {
@@ -136,8 +140,9 @@ class FitProAdapter @Inject constructor(
                 _state.value = AdapterState.Active
             }
 
-            // Capture identity available from handshake and derive DeviceInfo
+            // Capture identity / health available from start() (the forwarding coroutines below may not have run yet)
             updateIdentity(newSession.deviceIdentity.value)
+            _degradedReason.value = newSession.degradedReason.value
 
             // Merge MCU-reported capabilities into DeviceInfo (V1 only)
             if (newSession is V1Session) {
@@ -163,6 +168,14 @@ class FitProAdapter @Inject constructor(
                     newSession.consoleKeyPresses.collect { key -> _consoleKeyPresses.tryEmit(key) }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { logger.e(TAG, "Console-key forwarding failed", e) }
+            }
+
+            // Forward the session's degraded-health reason
+            degradedForwardJob = scope.launch {
+                try {
+                    newSession.degradedReason.collect { _degradedReason.value = it }
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { logger.e(TAG, "Degraded-reason forwarding failed", e) }
             }
 
             // Forward device identity changes and derive DeviceInfo
@@ -241,6 +254,8 @@ class FitProAdapter @Inject constructor(
         dataForwardJob = null
         keyForwardJob?.cancel()
         keyForwardJob = null
+        degradedForwardJob?.cancel()
+        degradedForwardJob = null
         identityForwardJob?.cancel()
         identityForwardJob = null
         stateMonitorJob?.cancel()
@@ -252,6 +267,7 @@ class FitProAdapter @Inject constructor(
         _exerciseData.value = null
         _deviceIdentity.value = null
         _deviceInfo.value = null
+        _degradedReason.value = null
         _state.value = AdapterState.Inactive
     }
 

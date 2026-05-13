@@ -76,6 +76,7 @@ class DashboardViewModelTest {
         override val deviceInfo: StateFlow<DeviceInfo?> = this@DashboardViewModelTest.deviceInfo
         override val deviceIdentity: StateFlow<DeviceIdentity?> = this@DashboardViewModelTest.deviceIdentity
         override val consoleKeyPresses: Flow<ConsoleKey> = emptyFlow()
+        override val degradedReason: StateFlow<String?> = MutableStateFlow(null)
         override val prerequisites: List<Prerequisite> = emptyList()
         override fun canOperate(snapshot: SystemSnapshot): Boolean = true
         override suspend fun connect() {}

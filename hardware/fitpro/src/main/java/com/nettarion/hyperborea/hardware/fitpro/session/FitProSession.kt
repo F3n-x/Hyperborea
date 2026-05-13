@@ -15,6 +15,9 @@ interface FitProSession {
     /** Console membrane-keypad presses (resistance ± / incline ± / speed ±), one event per press. */
     val consoleKeyPresses: SharedFlow<ConsoleKey>
 
+    /** Non-null while streaming but degraded — e.g. the console never confirmed the workout started. */
+    val degradedReason: StateFlow<String?>
+
     suspend fun start()
     suspend fun stop()
     suspend fun identify(): DeviceIdentity?

@@ -240,7 +240,7 @@ class Orchestrator(
                 }
         }
 
-        _state.value = OrchestratorState.Running()
+        _state.value = OrchestratorState.Running(degraded = hardwareAdapter.degradedReason.value)
         rideRecorder.start(mergedData.filterNotNull())
 
         // Send fan AUTO command if configured
@@ -265,7 +265,7 @@ class Orchestrator(
                             if (_state.value is OrchestratorState.Paused) {
                                 logger.i(TAG, "Safety key re-inserted — resuming")
                                 hardwareAdapter.sendCommand(DeviceCommand.ResumeWorkout)
-                                _state.value = OrchestratorState.Running()
+                                _state.value = OrchestratorState.Running(degraded = hardwareAdapter.degradedReason.value)
                             }
                         }
                     }
@@ -305,7 +305,7 @@ class Orchestrator(
                                 logger.i(TAG, "Hardware reconnected on attempt $attempt")
                                 mutex.withLock {
                                     if (_state.value is OrchestratorState.Running || _state.value is OrchestratorState.Paused) {
-                                        _state.value = OrchestratorState.Running()
+                                        _state.value = OrchestratorState.Running(degraded = hardwareAdapter.degradedReason.value)
                                     }
                                 }
                                 reconnected = true
@@ -399,7 +399,7 @@ class Orchestrator(
                 return
             }
             hardwareAdapter.sendCommand(DeviceCommand.ResumeWorkout)
-            _state.value = OrchestratorState.Running()
+            _state.value = OrchestratorState.Running(degraded = hardwareAdapter.degradedReason.value)
             logger.i(TAG, "Orchestrator resumed")
         }
     }

@@ -43,6 +43,11 @@ class V2Session(
     // The V2 protocol has no console-keypad field — this never emits.
     override val consoleKeyPresses: SharedFlow<ConsoleKey> = MutableSharedFlow()
 
+    // V2's workout-mode transition isn't confirmed yet (the V2 console-start path still needs a
+    // GlassOS-faithful rework — see the V1 equivalent), so we never report it as degraded.
+    private val _degradedReason = MutableStateFlow<String?>(null)
+    override val degradedReason: StateFlow<String?> = _degradedReason.asStateFlow()
+
     private var heartbeatJob: Job? = null
     private var receiveJob: Job? = null
     private var lastSentGrade = 0f

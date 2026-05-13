@@ -52,6 +52,9 @@ class V1Session(
         MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val consoleKeyPresses: SharedFlow<ConsoleKey> = _consoleKeyPresses.asSharedFlow()
 
+    private val _degradedReason = MutableStateFlow<String?>(null)
+    override val degradedReason: StateFlow<String?> = _degradedReason.asStateFlow()
+
     private var pollJob: Job? = null
     private var pendingWriteFields: Map<V1DataField, Float> = emptyMap()
     private val pendingWriteMutex = Mutex()
@@ -140,6 +143,7 @@ class V1Session(
         accumulator.reset()
         _exerciseData.value = null
         _deviceIdentity.value = null
+        _degradedReason.value = null
         _sessionState.value = SessionState.Disconnected
         logger.i(TAG, "V1 session stopped")
     }
@@ -408,6 +412,9 @@ class V1Session(
         writeAndConfirmWorkoutMode(WorkoutMode.WARM_UP) { it != WorkoutMode.IDLE }
         val running = writeAndConfirmWorkoutMode(WorkoutMode.RUNNING) { it == WorkoutMode.RUNNING }
         logger.i(TAG, "Console state: IDLE → WARM_UP → ${running ?: WorkoutMode.UNKNOWN}")
+        _degradedReason.value =
+            if (running == WorkoutMode.RUNNING) null
+            else "The console didn't confirm the workout started — resistance/speed may not respond"
     }
 
     private suspend fun writeAndConfirmWorkoutMode(target: WorkoutMode, accept: (WorkoutMode) -> Boolean): WorkoutMode? {
