@@ -236,10 +236,12 @@ fun DashboardScreen(
 }
 
 /**
- * Centered overlay shown while the orchestrator is in
- * [OrchestratorState.AwaitingConsoleStart] (treadmill armed in WARM_UP, MCU gating belt motion
- * on the physical Start key). The StatusBar's 48 dp status indicator is too small to register
- * at the console's 1920×1080 arm's-length viewing distance; this card is the visible cue.
+ * Centered overlay shown while the orchestrator is in [OrchestratorState.AwaitingConsoleStart]:
+ * the treadmill is armed in WARM_UP and broadcasting, and we're waiting for the user to press the
+ * console's START so the MCU reports WORKOUT_MODE=RUNNING (which begins recording). WARM_UP is a
+ * real phase — the belt may already be moving — so the copy must not claim the belt is stopped.
+ * The StatusBar's 48 dp status indicator is too small to register at the console's
+ * 1920×1080 arm's-length viewing distance; this card is the visible cue.
  */
 @Composable
 private fun ConsoleStartPrompt(message: String, modifier: Modifier = Modifier) {
@@ -270,7 +272,8 @@ private fun ConsoleStartPrompt(message: String, modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "The belt will start when you press the physical Start key. Broadcasts are already live — pair Zwift now if you haven't.",
+                "Hyperborea is connected and broadcasting to Zwift — pair it now if you haven't. " +
+                    "Your workout begins when you press START on the console.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = colors.textMedium,
                 textAlign = TextAlign.Center,
