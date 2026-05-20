@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-05-20
+- **Setting treadmill speed over FTMS now works.** The Fitness Machine Control Point handled Set Target Inclination, Resistance, and Power but not **Set Target Speed** (opcode `0x02`) — so an app controlling a treadmill over WiFi/BLE FTMS could set incline but not speed (the write came back as unsupported). Speed-set is now parsed (uint16, 0.01 km/h) and forwarded to the console's belt-speed control, on both the WiFi and BLE paths.
+- **Distance now shows 2 decimal places** on the dashboard and the profile / ride-summary screens — far more useful for short distances now that distance reads in real kilometres.
+- **Equipment lifetime stats (Device settings) read sanely on treadmills.** The console's total-time and odometer fields use different units per machine: bikes report seconds and metres, but treadmills report milliseconds and millimetres, which were being shown raw as a ~13-year runtime and an 833,757 km odometer. Belt-machine values are now scaled to real hours/kilometres (e.g. 113 h / 834 km); bikes are unchanged. (The units can't be told apart by value alone — a lightly-used millisecond device looks like a heavily-used second device — so the scaling keys off device type.)
+- **No more phantom speed target on bikes.** The dashboard speed cell was showing a blue "set" target of 0.0 on bikes (a bike has no commandable speed); that target is no longer surfaced for non-belt machines. Treadmills are unchanged.
+- Internal: removed the temporary FitPro field-shape diagnostic logging added in 1.2.7 — the treadmill speed/distance/startup decode is confirmed, so it's no longer needed.
+
 ## [1.2.7] - 2026-05-20
 - **Treadmill speed now reads the real belt speed instead of 0.** Belt machines report belt speed in the `KPH` field and leave `ACTUAL_KPH` at 0; bikes do the opposite (a virtual speed in `ACTUAL_KPH`, with `KPH` as the target read-back). The FitPro V1 decoder always took speed from `ACTUAL_KPH`, so on a treadmill the live speed sat at 0 — including the one metric Zwift shows for a treadmill on a free account, which is why it read 0 there too. Speed is now sourced per device type (new shared `DeviceType.isBeltBased`); bikes are unchanged.
 - **Distance was reported roughly 1000× too large on every machine — bikes included.** The wire value is in metres, but `ExerciseData.distance` and everything downstream of it (FTMS total distance, the dashboard "KM" field, the recorded `distanceKm`, FIT export) is in kilometres, and the metres→km conversion was missing — so a short ride showed thousands of "KM" and saturated the FTMS distance field. Now converted at the source.
