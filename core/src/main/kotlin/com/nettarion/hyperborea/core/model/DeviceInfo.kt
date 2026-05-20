@@ -36,4 +36,19 @@ data class DeviceInfo(
 
 enum class DeviceType { BIKE, TREADMILL, ROWER, ELLIPTICAL }
 
+/**
+ * Belt-driven machines (treadmills and incline trainers) — true only for [DeviceType.TREADMILL]
+ * here, since the incline-trainer equipment id is folded into it. Named so the rule has a single
+ * home and can be extended if a dedicated incline-trainer type is ever added.
+ *
+ * The distinction drives two behaviours that genuinely differ on belt machines:
+ *  - **Displayed speed source** — belt machines report belt speed in the writable `KPH` field and
+ *    leave `ACTUAL_KPH` at 0; bikes/ellipticals leave `KPH` as the target and report a virtual speed
+ *    in `ACTUAL_KPH`.
+ *  - **Stopping** — a belt machine keeps the belt running on a bare idle transition and must be
+ *    explicitly commanded to stop.
+ */
+val DeviceType.isBeltBased: Boolean
+    get() = this == DeviceType.TREADMILL
+
 enum class Metric { POWER, CADENCE, SPEED, RESISTANCE, INCLINE, HEART_RATE, DISTANCE, CALORIES }

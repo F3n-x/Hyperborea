@@ -7,9 +7,11 @@ import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
 import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.model.ExerciseData
+import com.nettarion.hyperborea.core.model.isBeltBased
 import com.nettarion.hyperborea.hardware.fitpro.session.DeviceDatabase
 import com.nettarion.hyperborea.hardware.fitpro.session.ExerciseDataAccumulator
 import com.nettarion.hyperborea.hardware.fitpro.session.FitProSession
+import com.nettarion.hyperborea.hardware.fitpro.session.GripHeartRateFilter
 import com.nettarion.hyperborea.hardware.fitpro.session.PowerEstimator
 import com.nettarion.hyperborea.hardware.fitpro.session.SessionState
 import com.nettarion.hyperborea.hardware.fitpro.transport.HidTransport
@@ -66,6 +68,10 @@ class V1Session(
     private var lastSentSpeed = 0f
     private var lastKeyCode = -1 // for KEY_OBJECT press-edge detection
     private val resistance = ResistanceConverter(deviceInfo.maxResistance)
+    private val gripHeartRate = GripHeartRateFilter()
+
+    /** How many poll responses have been dumped by the temporary field-shape diagnostics this session. */
+    private var diagPollSamplesLogged = 0
 
     /** Device capabilities read from MCU during handshake. */
     var capabilities: V1Capabilities? = null
@@ -142,21 +148,18 @@ class V1Session(
     }
 
     override suspend fun stop() {
-        pollJob?.cancel()
+        // Stop the poll loop and wait (briefly) for it to actually exit before we touch the transport
+        // — haltForTeardown does its own request/response round-trips and must not race the poll's
+        // reads. Bounded so a wedged MCU read can't hang teardown.
+        pollJob?.let { job ->
+            job.cancel()
+            withTimeoutOrNull(POLL_JOIN_TIMEOUT_MS) { job.join() }
+        }
         pollJob = null
 
         try {
             if (transport.isOpen) {
-                // TODO: Test whether MCU auto-resets incline/resistance on IDLE transition.
-                //  If not, explicitly write GRADE=0 and RESISTANCE=<default> here before IDLE.
-
-                // Write WORKOUT_MODE=IDLE before disconnecting — fire-and-forget,
-                // don't wait for responses since we're tearing down.
-                writeMessage(V1Message.Outgoing.ReadWriteData(
-                    writeFields = mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.IDLE.raw),
-                ))
-                delay(COMMAND_DELAY_MS)
-
+                haltForTeardown()
                 writeMessage(V1Message.Outgoing.Disconnect())
                 delay(COMMAND_DELAY_MS)
                 transport.close()
@@ -173,6 +176,46 @@ class V1Session(
         _degradedReason.value = null
         _sessionState.value = SessionState.Disconnected
         logger.i(TAG, "V1 session stopped")
+    }
+
+    /**
+     * Brings the equipment to a safe stopped state before we disconnect.
+     *
+     * On a **belt machine** this is safety-critical: a bare `WORKOUT_MODE=IDLE` write does NOT stop
+     * the belt — the firmware treats the idle transition as advisory, so the belt keeps running until
+     * the user hits the physical Stop key (the user-reported bug). We instead command belt speed to 0
+     * *and* `PAUSE` the workout — both halt the belt — and confirm the `KPH` read-back reaches 0
+     * before returning, so we never close the USB transport with the halt unacknowledged.
+     *
+     * On a **bike / elliptical** nothing the app drives keeps moving, so a single `IDLE` write (the
+     * long-standing behaviour) is enough.
+     */
+    private suspend fun haltForTeardown() {
+        if (!detectedDeviceType.isBeltBased) {
+            writeMessage(V1Message.Outgoing.ReadWriteData(
+                writeFields = mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.IDLE.raw),
+            ))
+            delay(COMMAND_DELAY_MS)
+            return
+        }
+
+        repeat(BELT_HALT_CONFIRM_ATTEMPTS) { attempt ->
+            // Assert the halt once, then poll the KPH read-back until the MCU acknowledges speed 0.
+            val response = sendReadWrite(
+                writeFields = if (attempt == 0) mapOf(
+                    V1DataField.KPH to 0f,
+                    V1DataField.WORKOUT_MODE to WorkoutMode.PAUSE.raw,
+                ) else emptyMap(),
+                readFields = setOf(V1DataField.KPH),
+            )
+            val commandedKph = response?.fields?.get(V1DataField.KPH)
+            if (commandedKph != null && commandedKph <= BELT_STOPPED_KPH) {
+                logger.i(TAG, "Belt halt confirmed (KPH=$commandedKph) before disconnect")
+                return
+            }
+            delay(STATE_CONFIRM_POLL_MS)
+        }
+        logger.w(TAG, "Belt halt not confirmed after $BELT_HALT_CONFIRM_ATTEMPTS attempts — sent KPH=0 + PAUSE, proceeding")
     }
 
     override suspend fun identify(): DeviceIdentity? {
@@ -382,7 +425,10 @@ class V1Session(
     }
 
     private suspend fun readStartupFields(equipmentDeviceId: Int) {
-        val response = sendReadWrite(readFields = V1DataField.startupReadFields)
+        val response = sendReadWrite(
+            readFields = V1DataField.startupReadFields,
+            diagLabel = if (DIAGNOSTIC_FIELD_LOGGING) "startup" else null,
+        )
         if (response == null || response.status != V1Message.STATUS_DONE || response.fields.isEmpty()) {
             logger.d(TAG, "Startup field read returned no data: $response")
             return
@@ -534,11 +580,14 @@ class V1Session(
     private suspend fun sendReadWrite(
         writeFields: Map<V1DataField, Float> = emptyMap(),
         readFields: Set<V1DataField> = emptySet(),
+        diagLabel: String? = null,
     ): V1Message.Incoming.DataResponse? {
         writeMessage(V1Message.Outgoing.ReadWriteData(writeFields = writeFields, readFields = readFields))
         delay(READ_DELAY_MS)
         val raw = readPacketOrNull() ?: return null
-        return V1Codec.decodeSingleDataResponse(raw, readFields.ifEmpty { V1DataField.periodicReadFields })
+        val decoded = V1Codec.decodeSingleDataResponse(raw, readFields.ifEmpty { V1DataField.periodicReadFields })
+        if (diagLabel != null) diagLogResponse(diagLabel, listOf(raw), decoded)
+        return decoded
     }
 
     private suspend fun writeMessage(message: V1Message.Outgoing) {
@@ -611,8 +660,10 @@ class V1Session(
             return
         }
 
+        val wantDiag = DIAGNOSTIC_FIELD_LOGGING && diagPollSamplesLogged < DIAGNOSTIC_POLL_SAMPLES
+        if (wantDiag) diagPollSamplesLogged++
         val decoded = try {
-            readResponse(firstPacket, pollFields)
+            readResponse(firstPacket, pollFields, if (wantDiag) "poll#$diagPollSamplesLogged" else null)
         } catch (e: Exception) {
             logger.w(TAG, "Malformed response (${firstPacket.size} bytes): ${e.message}")
             // Re-queue write fields so commands aren't lost
@@ -685,13 +736,23 @@ class V1Session(
                         logger.d(TAG, "Cadence went non-zero: ${value.toInt()} rpm")
                     }
                 }
-                V1DataField.ACTUAL_KPH -> accumulator.updateSpeed(value)
-                V1DataField.KPH -> accumulator.updateTargetSpeed(value)
+                // Speed source is device-type-dependent: belt machines report belt speed in KPH
+                // (ACTUAL_KPH stays 0), everything else reports a virtual speed in ACTUAL_KPH and
+                // uses KPH as the target read-back.
+                V1DataField.ACTUAL_KPH -> if (!detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
+                V1DataField.KPH ->
+                    if (detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
+                    else accumulator.updateTargetSpeed(value)
                 V1DataField.RESISTANCE -> accumulator.updateResistance(resistance.rawToLevel(value.toInt()))
                 V1DataField.ACTUAL_INCLINE -> accumulator.updateIncline(value)
                 V1DataField.GRADE -> accumulator.updateTargetIncline(value)
-                V1DataField.PULSE -> accumulator.updateHeartRate(value.toInt())
-                V1DataField.CURRENT_DISTANCE -> accumulator.updateDistance(value)
+                // Grip HR is a noisy analog contact reading — gate + smooth it, and clear (null) on
+                // contact loss. External BLE HRMs bypass this and are merged in the orchestrator.
+                V1DataField.PULSE -> accumulator.updateHeartRate(gripHeartRate.update(value.toInt()))
+                // CURRENT_DISTANCE is meters on the wire, but ExerciseData.distance — and every
+                // consumer (FTMS ×1000→m, dashboard "KM", ride recorder distanceKm) — is kilometers.
+                // Convert here, or distance reads 1000× high.
+                V1DataField.CURRENT_DISTANCE -> accumulator.updateDistance(value / 1000f)
                 V1DataField.CURRENT_CALORIES -> accumulator.updateCalories(value.toInt())
                 V1DataField.CURRENT_TIME -> accumulator.updateElapsedTime(value.toLong())
                 V1DataField.WORKOUT_MODE -> {
@@ -846,6 +907,7 @@ class V1Session(
     private suspend fun readResponse(
         firstPacket: ByteArray,
         dataResponseFields: Set<V1DataField>? = null,
+        diagLabel: String? = null,
     ): V1Message.Incoming? {
         if (V1Codec.isMultiPacketHeader(firstPacket)) {
             val expected = V1Codec.expectedPacketCount(firstPacket)
@@ -854,14 +916,34 @@ class V1Session(
                 val dataPacket = transport.readPacket() ?: return null
                 packets.add(dataPacket)
             }
-            return V1Codec.decode(packets, dataResponseFields)
+            val decoded = V1Codec.decode(packets, dataResponseFields)
+            if (diagLabel != null) diagLogResponse(diagLabel, packets, decoded as? V1Message.Incoming.DataResponse)
+            return decoded
         }
-        return V1Codec.decodeSingle(firstPacket, dataResponseFields)
+        val decoded = V1Codec.decodeSingle(firstPacket, dataResponseFields)
+        if (diagLabel != null) diagLogResponse(diagLabel, listOf(firstPacket), decoded as? V1Message.Incoming.DataResponse)
+        return decoded
     }
 
     private fun roundToStep(value: Float, step: Float): Float =
         (value / step).roundToInt() * step
 
+    /**
+     * Temporary field-shape diagnostics (see [DIAGNOSTIC_FIELD_LOGGING]). Dumps the raw wire bytes
+     * and the decoded field values for a labelled response at I level, so they land in the
+     * user-exported system log. Used to confirm the NordicTrack 2950's distance units and the
+     * startup-read tail on real hardware we can't reproduce locally.
+     */
+    private fun diagLogResponse(label: String, packets: List<ByteArray>, decoded: V1Message.Incoming.DataResponse?) {
+        val raw = packets.joinToString(" | ") { packet -> packet.joinToString(" ") { "%02X".format(it) } }
+        logger.i(TAG, "DIAG[$label] raw: $raw")
+        if (decoded != null) {
+            val summary = decoded.fields.entries
+                .sortedBy { it.key.fieldIndex }
+                .joinToString { "${it.key.name}=${it.value}" }
+            logger.i(TAG, "DIAG[$label] decoded(${decoded.fields.size}, truncated=${decoded.isTruncated}): $summary")
+        }
+    }
 
     companion object {
         private const val TAG = "V1Session"
@@ -879,6 +961,22 @@ class V1Session(
         // for up to STATE_CONFIRM_TIMEOUT_MS, before giving up and continuing degraded.
         private const val STATE_CONFIRM_POLL_MS = 150L
         private const val STATE_CONFIRM_TIMEOUT_MS = 5_000L
+
+        // Teardown: bound how long stop() waits for the poll loop to exit before touching the transport.
+        private const val POLL_JOIN_TIMEOUT_MS = 500L
+
+        // Belt-machine halt on stop: command KPH=0 + PAUSE, then poll the KPH read-back until it
+        // reaches ~0 (confirming the MCU accepted the halt) before disconnecting.
+        private const val BELT_HALT_CONFIRM_ATTEMPTS = 8
+        private const val BELT_STOPPED_KPH = 0.1f
+
+        // Temporary field-shape diagnostics for the treadmill speed/distance/startup investigation.
+        // When true, dumps raw wire bytes + decoded values for the startup read and the first
+        // DIAGNOSTIC_POLL_SAMPLES poll responses (at I level, so they reach the exported system log).
+        // Bounded per session so it can't flood. Remove once the NordicTrack 2950 distance/startup
+        // units are confirmed on hardware.
+        private const val DIAGNOSTIC_FIELD_LOGGING = true
+        private const val DIAGNOSTIC_POLL_SAMPLES = 3
 
         // Console-init field values: 1 = ENABLED (REQUIRE_START_REQUESTED) / LOCKED (IDLE_MODE_LOCKOUT),
         // 0 = DISABLED / UNLOCKED.

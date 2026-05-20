@@ -1126,7 +1126,7 @@ class V1SessionTest {
     @Test
     fun `commandToFields SetResistance scales the raw value`() {
         val session = createUnstartedSession() // maxResistance = 24
-        // GlassOS ResistanceConverter: scale = 10000/24 ≈ 416.67; raw = round(level*scale) - 1, clamped ≥ 0.
+        // ResistanceConverter: scale = 10000/24 ≈ 416.67; raw = round(level*scale) - 1, clamped ≥ 0.
         assertThat(session.commandToFields(DeviceCommand.SetResistance(0)))
             .containsExactly(V1DataField.RESISTANCE, 0f)
         assertThat(session.commandToFields(DeviceCommand.SetResistance(12)))
@@ -1436,7 +1436,7 @@ class V1SessionTest {
         // The formula is 100_000_000 = 2^8 · 5^8 and 1024 = 2^10, so calories must be a multiple
         // of 4 to round-trip cleanly through the integer-division encode/decode pair.
         val targetCalories = 48
-        val targetDistanceRaw = 1234 // V1Converter.INT — raw int passed through to accumulator
+        val targetDistanceRaw = 1234 // V1Converter.INT — raw meters on the wire; stored as km (÷1000)
         val encodedCalories = (targetCalories.toLong() * 100_000_000L / 1024L).toInt()
 
         val payloadSize = pollFields.sumOf { it.sizeBytes }
@@ -1486,6 +1486,127 @@ class V1SessionTest {
         assertThat(data!!.calories).isEqualTo(targetCalories)
         // The bug we're guarding against produced negative calories, so additionally guard the sign.
         assertThat(data.calories!!).isAtLeast(0)
-        assertThat(data.distance).isEqualTo(targetDistanceRaw.toFloat())
+        assertThat(data.distance).isEqualTo(targetDistanceRaw.toFloat() / 1000f) // meters → km
+    }
+
+    // --- Speed source by device type ---
+
+    @Test
+    fun `bike speed comes from ACTUAL_KPH and KPH is the target`() = runTest {
+        val session = startStreamingSession() // default device = FITNESS_BIKE (not belt-based)
+
+        backgroundScope.launch {
+            transport.emitIncoming(buildDataResponseWithSpeeds(kphRaw = 500, actualKphRaw = 2000))
+        }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        val data = session.exerciseData.value!!
+        assertThat(data.speed).isEqualTo(20.0f)       // ACTUAL_KPH 2000/100 — the virtual speed
+        assertThat(data.targetSpeed).isEqualTo(5.0f)  // KPH 500/100 — the commanded target
+    }
+
+    @Test
+    fun `treadmill speed comes from KPH and ACTUAL_KPH is ignored`() = runTest {
+        // On a belt machine ACTUAL_KPH stays 0; the real belt speed is reported in KPH. Reading speed
+        // from ACTUAL_KPH (the bike behaviour) is exactly the user-reported "white speed stuck at 0".
+        val session = startStreamingTreadmillSession()
+
+        backgroundScope.launch {
+            transport.emitIncoming(buildDataResponseWithSpeeds(kphRaw = 850, actualKphRaw = 0))
+        }
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        val data = session.exerciseData.value!!
+        assertThat(data.speed).isEqualTo(8.5f)   // KPH 850/100 — the real belt speed
+        assertThat(data.targetSpeed).isNull()    // no phantom target number on a treadmill
+    }
+
+    // --- Belt halt on stop (safety) ---
+
+    @Test
+    fun `treadmill stop commands belt speed zero and PAUSE before disconnecting`() = runTest {
+        // A bare WORKOUT_MODE=IDLE write does not stop the belt on a treadmill — it kept running until
+        // the user hit the physical Stop key. Stop must command KPH=0 + PAUSE.
+        val session = startStreamingTreadmillSession()
+        val writesBefore = transport.writtenPackets.size
+
+        session.stop()
+        advanceUntilIdle()
+
+        val newPackets = transport.writtenPackets.drop(writesBefore)
+        assertThat(newPackets.any { it.isBeltHaltWrite() }).isTrue()
+        assertThat(newPackets.any { it[2] == 0x05.toByte() }).isTrue() // Disconnect
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Disconnected)
+    }
+
+    @Test
+    fun `bike stop writes IDLE and never a belt halt`() = runTest {
+        val session = startStreamingSession() // FITNESS_BIKE — nothing keeps moving, IDLE is enough
+        val writesBefore = transport.writtenPackets.size
+
+        backgroundScope.launch { transport.emitIncoming(buildDisconnectAck()) }
+        session.stop()
+        advanceUntilIdle()
+
+        val newPackets = transport.writtenPackets.drop(writesBefore)
+        assertThat(newPackets.none { it.isBeltHaltWrite() }).isTrue()
+        assertThat(newPackets.any { it.workoutModeWriteValue() == 1 }).isTrue() // WORKOUT_MODE=IDLE
+    }
+
+    private suspend fun TestScope.startStreamingTreadmillSession(): V1Session {
+        val session = createSession(this)
+        backgroundScope.launch {
+            transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
+            transport.emitIncoming(buildConnectAck())
+            transport.emitIncoming(buildSupportedDevicesResponse())
+            transport.emitIncoming(buildSystemInfoResponse())
+            transport.emitIncoming(buildVersionInfoResponse())
+            transport.emitIncoming(buildSecurityUnlockedResponse())
+            transport.emitIncoming(buildCapabilityResponse())
+            respondToTreadmillConsoleStartup()
+        }
+        session.start()
+        advanceUntilIdle()
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        return session
+    }
+
+    /** Full periodicReadFields payload with KPH (idx0) and ACTUAL_KPH (idx16) set to known raw values. */
+    private fun buildDataResponseWithSpeeds(kphRaw: Int, actualKphRaw: Int): ByteArray {
+        val pollFields = V1DataField.periodicReadFields.sortedBy { it.fieldIndex }
+        val payload = ByteArray(pollFields.sumOf { it.sizeBytes })
+        var offset = 0
+        for (field in pollFields) {
+            when (field) {
+                V1DataField.KPH -> {
+                    payload[offset] = (kphRaw and 0xFF).toByte()
+                    payload[offset + 1] = ((kphRaw shr 8) and 0xFF).toByte()
+                }
+                V1DataField.ACTUAL_KPH -> {
+                    payload[offset] = (actualKphRaw and 0xFF).toByte()
+                    payload[offset + 1] = ((actualKphRaw shr 8) and 0xFF).toByte()
+                }
+                else -> { /* leave zero */ }
+            }
+            offset += field.sizeBytes
+        }
+        val totalLen = 4 + payload.size + 1
+        val header = byteArrayOf(0x07, totalLen.toByte(), 0x02, 0x02)
+        val withoutChecksum = header + payload
+        return withoutChecksum + V1Codec.checksum(withoutChecksum)
+    }
+
+    /**
+     * True for the belt-halt ReadWriteData stop() sends on a treadmill: writes KPH (idx0 → section 0
+     * bit 0) = 0 and WORKOUT_MODE (idx12 → section 1 bit 4) = PAUSE(3). Encoding:
+     * `[device, len, cmd=0x02, writeNumSections=2, mask0=0x01, mask1=0x10, KPH_lo, KPH_hi, mode, …]`.
+     */
+    private fun ByteArray.isBeltHaltWrite(): Boolean {
+        if (size < 9 || this[2] != 0x02.toByte()) return false
+        if (this[3] != 0x02.toByte() || this[4] != 0x01.toByte() || this[5] != 0x10.toByte()) return false
+        if (this[6] != 0x00.toByte() || this[7] != 0x00.toByte()) return false // KPH = 0
+        return this[8] == 0x03.toByte() // WORKOUT_MODE = PAUSE(3)
     }
 }

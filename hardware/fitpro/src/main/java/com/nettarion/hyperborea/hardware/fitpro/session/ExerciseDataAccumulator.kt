@@ -68,7 +68,8 @@ class ExerciseDataAccumulator(
     fun updateSpeed(value: Float) { speed = value }
     fun updateResistance(value: Int) { resistance = value }
     fun updateIncline(value: Float) { incline = value }
-    fun updateHeartRate(value: Int) { heartRate = value }
+    /** A `null` value clears the reading — used when a grip sensor loses contact. */
+    fun updateHeartRate(value: Int?) { heartRate = value }
     fun updateDistance(value: Float) { distance = value }
     fun updateCalories(value: Int) { calories = value }
     fun updateElapsedTime(seconds: Long) { /* ignored — we track our own clock */ }

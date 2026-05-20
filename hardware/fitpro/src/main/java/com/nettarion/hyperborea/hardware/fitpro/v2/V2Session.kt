@@ -7,8 +7,10 @@ import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
 import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.model.ExerciseData
+import com.nettarion.hyperborea.core.model.isBeltBased
 import com.nettarion.hyperborea.hardware.fitpro.session.ExerciseDataAccumulator
 import com.nettarion.hyperborea.hardware.fitpro.session.FitProSession
+import com.nettarion.hyperborea.hardware.fitpro.session.GripHeartRateFilter
 import com.nettarion.hyperborea.hardware.fitpro.session.SessionState
 import com.nettarion.hyperborea.hardware.fitpro.transport.HidTransport
 import kotlin.math.roundToInt
@@ -70,6 +72,7 @@ class V2Session(
     private var receiveJob: Job? = null
     private var lastSentGrade = 0f
     private var lastSentSpeed = 0f
+    private val gripHeartRate = GripHeartRateFilter()
 
     override suspend fun start() {
         if (_sessionState.value is SessionState.Streaming || _sessionState.value is SessionState.Connecting) return
@@ -110,6 +113,7 @@ class V2Session(
 
         try {
             if (transport.isOpen) {
+                haltForTeardown()
                 // Return the console to idle before disconnecting
                 transport.write(V2Codec.encode(
                     V2Message.Outgoing.WriteFeature(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.NONE.raw),
@@ -129,6 +133,22 @@ class V2Session(
         _degradedReason.value = null
         _sessionState.value = SessionState.Disconnected
         logger.i(TAG, "V2 session stopped")
+    }
+
+    /**
+     * Belt machines must be explicitly stopped before the console drops to idle, or the belt keeps
+     * running (the V1-confirmed bug; mirrored here for protocol parity). Command belt speed to 0 and
+     * `PAUSED` — both halt the belt — then let the writes settle before teardown. V2 is event-driven
+     * with no synchronous read-back, so unlike [v1.V1Session.haltForTeardown] this is best-effort.
+     * Non-belt machines have nothing the app drives that keeps moving, so this is a no-op for them.
+     */
+    private suspend fun haltForTeardown() {
+        if (!detectedDeviceType.isBeltBased) return
+        transport.write(V2Codec.encode(V2Message.Outgoing.WriteFeature(V2FeatureId.TARGET_KPH, 0f)))
+        transport.write(V2Codec.encode(
+            V2Message.Outgoing.WriteFeature(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.PAUSED.raw),
+        ))
+        delay(BELT_HALT_SETTLE_MS)
     }
 
     override suspend fun identify(): DeviceIdentity? {
@@ -292,7 +312,9 @@ class V2Session(
             V2FeatureId.CURRENT_KPH -> accumulator.updateSpeed(value)
             V2FeatureId.TARGET_RESISTANCE -> accumulator.updateResistance(value.toInt())
             V2FeatureId.CURRENT_GRADE -> accumulator.updateIncline(value)
-            V2FeatureId.PULSE -> accumulator.updateHeartRate(value.toInt())
+            // Grip HR is a noisy analog contact reading — gate + smooth it, clearing on contact loss.
+            // External BLE HRMs bypass this and are merged in the orchestrator.
+            V2FeatureId.PULSE -> accumulator.updateHeartRate(gripHeartRate.update(value.toInt()))
             V2FeatureId.DISTANCE -> accumulator.updateDistance(value)
             V2FeatureId.CURRENT_CALORIES -> accumulator.updateCalories(value.toInt())
             V2FeatureId.RUNNING_TIME -> accumulator.updateElapsedTime(value.toLong())
@@ -437,6 +459,9 @@ class V2Session(
 
     companion object {
         private const val TAG = "V2Session"
+
+        // Belt-machine halt on stop: let the speed-0 + PAUSED writes settle before teardown.
+        private const val BELT_HALT_SETTLE_MS = 200L
         private const val HEARTBEAT_INTERVAL_MS = 720L
         private const val HEARTBEAT_VALUE = 720f
         private const val MAX_SUBSCRIBE_BATCH = 8
