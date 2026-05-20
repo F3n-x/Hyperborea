@@ -1492,7 +1492,7 @@ class V1SessionTest {
     // --- Speed source by device type ---
 
     @Test
-    fun `bike speed comes from ACTUAL_KPH and KPH is the target`() = runTest {
+    fun `bike speed comes from ACTUAL_KPH and KPH is not surfaced as a target`() = runTest {
         val session = startStreamingSession() // default device = FITNESS_BIKE (not belt-based)
 
         backgroundScope.launch {
@@ -1502,8 +1502,8 @@ class V1SessionTest {
         advanceUntilIdle()
 
         val data = session.exerciseData.value!!
-        assertThat(data.speed).isEqualTo(20.0f)       // ACTUAL_KPH 2000/100 — the virtual speed
-        assertThat(data.targetSpeed).isEqualTo(5.0f)  // KPH 500/100 — the commanded target
+        assertThat(data.speed).isEqualTo(20.0f)  // ACTUAL_KPH 2000/100 — the virtual speed
+        assertThat(data.targetSpeed).isNull()    // bikes have no speed setpoint — no blue target arrow
     }
 
     @Test

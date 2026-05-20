@@ -70,9 +70,6 @@ class V1Session(
     private val resistance = ResistanceConverter(deviceInfo.maxResistance)
     private val gripHeartRate = GripHeartRateFilter()
 
-    /** How many poll responses have been dumped by the temporary field-shape diagnostics this session. */
-    private var diagPollSamplesLogged = 0
-
     /** Device capabilities read from MCU during handshake. */
     var capabilities: V1Capabilities? = null
         private set
@@ -425,10 +422,7 @@ class V1Session(
     }
 
     private suspend fun readStartupFields(equipmentDeviceId: Int) {
-        val response = sendReadWrite(
-            readFields = V1DataField.startupReadFields,
-            diagLabel = if (DIAGNOSTIC_FIELD_LOGGING) "startup" else null,
-        )
+        val response = sendReadWrite(readFields = V1DataField.startupReadFields)
         if (response == null || response.status != V1Message.STATUS_DONE || response.fields.isEmpty()) {
             logger.d(TAG, "Startup field read returned no data: $response")
             return
@@ -443,10 +437,17 @@ class V1Session(
             equipmentDeviceId = equipmentDeviceId,
         )
         logger.i(TAG, "Capabilities: $capabilities")
-        val eqHours = fields[V1DataField.TOTAL_TIME]?.toLong()
-        val eqDist = fields[V1DataField.MOTOR_TOTAL_DISTANCE]
+        // TOTAL_TIME / MOTOR_TOTAL_DISTANCE units are device-dependent: bikes report seconds and
+        // metres, but belt machines (e.g. the NordicTrack 2950) report milliseconds and millimetres
+        // — which, read as raw s/m, would show a ~13-year runtime and an 833,757 km odometer. Scale
+        // belt-machine values to seconds/metres so the lifetime stats read sanely. (Empirical from
+        // observed hardware; a plausibility heuristic can't work because a lightly-used ms-device is
+        // indistinguishable from a heavily-used s-device — only the device type separates them.)
+        val lifetimeScale = if (detectedDeviceType.isBeltBased) 1000 else 1
+        val eqHours = fields[V1DataField.TOTAL_TIME]?.toLong()?.let { it / lifetimeScale }
+        val eqDist = fields[V1DataField.MOTOR_TOTAL_DISTANCE]?.let { it / lifetimeScale }
         _deviceIdentity.value = _deviceIdentity.value?.copy(equipmentHours = eqHours, equipmentDistance = eqDist)
-        logger.i(TAG, "Equipment stats: totalTime=${eqHours}s, totalDistance=$eqDist")
+        logger.i(TAG, "Equipment stats: totalTime=${eqHours}s, totalDistance=${eqDist}m")
     }
 
     /**
@@ -580,14 +581,11 @@ class V1Session(
     private suspend fun sendReadWrite(
         writeFields: Map<V1DataField, Float> = emptyMap(),
         readFields: Set<V1DataField> = emptySet(),
-        diagLabel: String? = null,
     ): V1Message.Incoming.DataResponse? {
         writeMessage(V1Message.Outgoing.ReadWriteData(writeFields = writeFields, readFields = readFields))
         delay(READ_DELAY_MS)
         val raw = readPacketOrNull() ?: return null
-        val decoded = V1Codec.decodeSingleDataResponse(raw, readFields.ifEmpty { V1DataField.periodicReadFields })
-        if (diagLabel != null) diagLogResponse(diagLabel, listOf(raw), decoded)
-        return decoded
+        return V1Codec.decodeSingleDataResponse(raw, readFields.ifEmpty { V1DataField.periodicReadFields })
     }
 
     private suspend fun writeMessage(message: V1Message.Outgoing) {
@@ -660,10 +658,8 @@ class V1Session(
             return
         }
 
-        val wantDiag = DIAGNOSTIC_FIELD_LOGGING && diagPollSamplesLogged < DIAGNOSTIC_POLL_SAMPLES
-        if (wantDiag) diagPollSamplesLogged++
         val decoded = try {
-            readResponse(firstPacket, pollFields, if (wantDiag) "poll#$diagPollSamplesLogged" else null)
+            readResponse(firstPacket, pollFields)
         } catch (e: Exception) {
             logger.w(TAG, "Malformed response (${firstPacket.size} bytes): ${e.message}")
             // Re-queue write fields so commands aren't lost
@@ -737,12 +733,11 @@ class V1Session(
                     }
                 }
                 // Speed source is device-type-dependent: belt machines report belt speed in KPH
-                // (ACTUAL_KPH stays 0), everything else reports a virtual speed in ACTUAL_KPH and
-                // uses KPH as the target read-back.
+                // (ACTUAL_KPH stays 0); other machines report a virtual speed in ACTUAL_KPH and
+                // leave KPH as an unused setpoint (a bike has no commandable speed), so we don't
+                // surface it as a target — no meaningless blue speed arrow on a bike.
                 V1DataField.ACTUAL_KPH -> if (!detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
-                V1DataField.KPH ->
-                    if (detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
-                    else accumulator.updateTargetSpeed(value)
+                V1DataField.KPH -> if (detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
                 V1DataField.RESISTANCE -> accumulator.updateResistance(resistance.rawToLevel(value.toInt()))
                 V1DataField.ACTUAL_INCLINE -> accumulator.updateIncline(value)
                 V1DataField.GRADE -> accumulator.updateTargetIncline(value)
@@ -907,7 +902,6 @@ class V1Session(
     private suspend fun readResponse(
         firstPacket: ByteArray,
         dataResponseFields: Set<V1DataField>? = null,
-        diagLabel: String? = null,
     ): V1Message.Incoming? {
         if (V1Codec.isMultiPacketHeader(firstPacket)) {
             val expected = V1Codec.expectedPacketCount(firstPacket)
@@ -916,34 +910,13 @@ class V1Session(
                 val dataPacket = transport.readPacket() ?: return null
                 packets.add(dataPacket)
             }
-            val decoded = V1Codec.decode(packets, dataResponseFields)
-            if (diagLabel != null) diagLogResponse(diagLabel, packets, decoded as? V1Message.Incoming.DataResponse)
-            return decoded
+            return V1Codec.decode(packets, dataResponseFields)
         }
-        val decoded = V1Codec.decodeSingle(firstPacket, dataResponseFields)
-        if (diagLabel != null) diagLogResponse(diagLabel, listOf(firstPacket), decoded as? V1Message.Incoming.DataResponse)
-        return decoded
+        return V1Codec.decodeSingle(firstPacket, dataResponseFields)
     }
 
     private fun roundToStep(value: Float, step: Float): Float =
         (value / step).roundToInt() * step
-
-    /**
-     * Temporary field-shape diagnostics (see [DIAGNOSTIC_FIELD_LOGGING]). Dumps the raw wire bytes
-     * and the decoded field values for a labelled response at I level, so they land in the
-     * user-exported system log. Used to confirm the NordicTrack 2950's distance units and the
-     * startup-read tail on real hardware we can't reproduce locally.
-     */
-    private fun diagLogResponse(label: String, packets: List<ByteArray>, decoded: V1Message.Incoming.DataResponse?) {
-        val raw = packets.joinToString(" | ") { packet -> packet.joinToString(" ") { "%02X".format(it) } }
-        logger.i(TAG, "DIAG[$label] raw: $raw")
-        if (decoded != null) {
-            val summary = decoded.fields.entries
-                .sortedBy { it.key.fieldIndex }
-                .joinToString { "${it.key.name}=${it.value}" }
-            logger.i(TAG, "DIAG[$label] decoded(${decoded.fields.size}, truncated=${decoded.isTruncated}): $summary")
-        }
-    }
 
     companion object {
         private const val TAG = "V1Session"
@@ -969,14 +942,6 @@ class V1Session(
         // reaches ~0 (confirming the MCU accepted the halt) before disconnecting.
         private const val BELT_HALT_CONFIRM_ATTEMPTS = 8
         private const val BELT_STOPPED_KPH = 0.1f
-
-        // Temporary field-shape diagnostics for the treadmill speed/distance/startup investigation.
-        // When true, dumps raw wire bytes + decoded values for the startup read and the first
-        // DIAGNOSTIC_POLL_SAMPLES poll responses (at I level, so they reach the exported system log).
-        // Bounded per session so it can't flood. Remove once the NordicTrack 2950 distance/startup
-        // units are confirmed on hardware.
-        private const val DIAGNOSTIC_FIELD_LOGGING = true
-        private const val DIAGNOSTIC_POLL_SAMPLES = 3
 
         // Console-init field values: 1 = ENABLED (REQUIRE_START_REQUESTED) / LOCKED (IDLE_MODE_LOCKOUT),
         // 0 = DISABLED / UNLOCKED.
