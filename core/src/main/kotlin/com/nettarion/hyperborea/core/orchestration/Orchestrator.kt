@@ -57,6 +57,25 @@ class Orchestrator(
     val state: StateFlow<OrchestratorState> = _state.asStateFlow()
     val lastSavedRideId: StateFlow<Long?> = rideRecorder.lastSavedRideId
 
+    /**
+     * Live hardware exercise data with the external heart-rate sensor merged in. This is the single
+     * source of truth for everything that shows or forwards live data — the dashboard, the broadcast
+     * adapters, and the ride recorder all read this, so an external HRM appears everywhere, not just
+     * on the sensor-settings screen. When no external reading is present the hardware's own
+     * (grip-sensor) heart rate passes through unchanged.
+     */
+    val exerciseData: StateFlow<ExerciseData?> =
+        if (sensorAdapter != null) {
+            combine(hardwareAdapter.exerciseData, sensorAdapter.reading) { exercise, sensor ->
+                when (sensor) {
+                    is SensorReading.HeartRate -> exercise?.copy(heartRate = sensor.bpm)
+                    null -> exercise
+                }
+            }.stateIn(scope, SharingStarted.Eagerly, hardwareAdapter.exerciseData.value)
+        } else {
+            hardwareAdapter.exerciseData
+        }
+
     private val mutex = Mutex()
     private var hardwareMonitorJob: Job? = null
     private var commandPipelineJob: Job? = null
@@ -215,21 +234,11 @@ class Orchestrator(
         // Connect sensor if available (non-fatal)
         connectSensor()
 
-        // Wire data source to broadcasts (merge sensor readings if available)
+        // Wire data source to broadcasts. exerciseData already merges the external HR sensor — it's
+        // the same flow the dashboard reads, so broadcasts/recording/UI never disagree.
         val deviceInfo = hardwareAdapter.deviceInfo.value
             ?: throw IllegalStateException("Hardware connected but deviceInfo is null")
-        val mergedData: StateFlow<ExerciseData?> = if (sensorAdapter != null) {
-            combine(hardwareAdapter.exerciseData, sensorAdapter.reading) { exercise, sensor ->
-                if (exercise == null) return@combine null
-                when (sensor) {
-                    is SensorReading.HeartRate -> exercise.copy(heartRate = sensor.bpm)
-                    null -> exercise
-                }
-            }.stateIn(scope, SharingStarted.Eagerly, hardwareAdapter.exerciseData.value)
-        } else {
-            hardwareAdapter.exerciseData
-        }
-        broadcastManager.connectDataSource(mergedData)
+        broadcastManager.connectDataSource(exerciseData)
         broadcastManager.updateDeviceInfo(deviceInfo)
 
         // Command pipeline: broadcasts → hardware
@@ -252,7 +261,7 @@ class Orchestrator(
             _state.value = OrchestratorState.AwaitingConsoleStart(CONSOLE_START_MESSAGE)
             logger.i(TAG, "Treadmill armed in WARM_UP — awaiting physical Start key")
         } else {
-            enterRunning(mergedData)
+            enterRunning()
         }
 
         // Workout-mode monitor:
@@ -269,7 +278,7 @@ class Orchestrator(
                         WORKOUT_MODE_RUNNING -> {
                             if (_state.value is OrchestratorState.AwaitingConsoleStart) {
                                 logger.i(TAG, "Console Start pressed — entering Running")
-                                enterRunning(mergedData)
+                                enterRunning()
                             }
                         }
                         WORKOUT_MODE_DMK -> {
@@ -384,9 +393,9 @@ class Orchestrator(
      * [OrchestratorState.AwaitingConsoleStart], so a second entry won't be triggered by the
      * normal flow.
      */
-    private suspend fun enterRunning(mergedData: StateFlow<ExerciseData?>) {
+    private suspend fun enterRunning() {
         _state.value = OrchestratorState.Running(degraded = hardwareAdapter.degradedReason.value)
-        rideRecorder.start(mergedData.filterNotNull())
+        rideRecorder.start(exerciseData.filterNotNull())
 
         if (userPreferences.fanMode.value == FanMode.AUTO) {
             hardwareAdapter.sendCommand(DeviceCommand.SetFanSpeed(4)) // AUTO
@@ -407,10 +416,15 @@ class Orchestrator(
 
     private fun connectSensor() {
         val sensor = sensorAdapter ?: return
+        // Reconnect the previously-paired sensor (e.g. after an app restart, when the user hasn't
+        // re-opened the sensor-settings screen). If it's already connected there — the adapter is a
+        // singleton — leave it. Connection is non-fatal: the workout continues without HR if it fails.
+        val address = userPreferences.savedSensorAddress.value ?: return
+        if (sensor.state.value is AdapterState.Active) return
         scope.launch {
             try {
-                // Sensor connection is non-fatal — workout continues without HR if it fails
-                logger.i(TAG, "Sensor adapter available: ${sensor.id.displayName}")
+                logger.i(TAG, "Connecting saved ${sensor.id.displayName} sensor")
+                sensor.connect(address)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 logger.w(TAG, "Sensor connection failed (non-fatal): ${e.message}")

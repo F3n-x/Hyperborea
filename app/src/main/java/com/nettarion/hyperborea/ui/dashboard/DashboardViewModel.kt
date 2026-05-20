@@ -68,7 +68,7 @@ class DashboardViewModel @Inject constructor(
 
     val uiState: StateFlow<DashboardUiState> = combine(
         orchestrator.state,
-        hardwareAdapter.exerciseData,
+        orchestrator.exerciseData, // merged hardware + external-HRM stream (not the raw hardware flow)
         hardwareAdapter.state,
         hardwareAdapter.deviceInfo,
         combine(
