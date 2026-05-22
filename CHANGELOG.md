@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-05-21
+- **A workout you end on the treadmill console can now be restarted without force-quitting the app.** After a run ended on the console (the long-beep stop), neither the app's Start nor the physical Start key would begin a new workout until Hyperborea was force-stopped and reopened. The cause was an abrupt USB teardown: on stop the app closed the connection the instant it sent the disconnect, while the equipment's controller was still finishing its end-of-workout housekeeping — leaving the link in a state that only a full reconnect (which force-quitting forced) could clear. Stopping now ends the workout cleanly (and drops incline to 0 on incline-capable machines) and waits for the controller to signal it's ready before releasing the USB link, so the next workout starts normally from the app's Start button.
+
 ## [1.2.8] - 2026-05-20
 - **Setting treadmill speed over FTMS now works.** The Fitness Machine Control Point handled Set Target Inclination, Resistance, and Power but not **Set Target Speed** (opcode `0x02`) — so an app controlling a treadmill over WiFi/BLE FTMS could set incline but not speed (the write came back as unsupported). Speed-set is now parsed (uint16, 0.01 km/h) and forwarded to the console's belt-speed control, on both the WiFi and BLE paths.
 - **Distance now shows 2 decimal places** on the dashboard and the profile / ride-summary screens — far more useful for short distances now that distance reads in real kilometres.
