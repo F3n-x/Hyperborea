@@ -146,8 +146,8 @@ class V1Session(
 
     override suspend fun stop() {
         // Stop the poll loop and wait (briefly) for it to actually exit before we touch the transport
-        // — haltForTeardown does its own request/response round-trips and must not race the poll's
-        // reads. Bounded so a wedged MCU read can't hang teardown.
+        // — gracefulEndForDisconnect does its own request/response round-trips and must not race the
+        // poll's reads. Bounded so a wedged MCU read can't hang teardown.
         pollJob?.let { job ->
             job.cancel()
             withTimeoutOrNull(POLL_JOIN_TIMEOUT_MS) { job.join() }
@@ -156,7 +156,7 @@ class V1Session(
 
         try {
             if (transport.isOpen) {
-                haltForTeardown()
+                gracefulEndForDisconnect()
                 writeMessage(V1Message.Outgoing.Disconnect())
                 delay(COMMAND_DELAY_MS)
                 transport.close()
@@ -176,28 +176,56 @@ class V1Session(
     }
 
     /**
-     * Brings the equipment to a safe stopped state before we disconnect.
+     * Brings the equipment to a safe stopped state, then waits for the MCU to confirm it's ready to
+     * drop the USB link, before [stop] disconnects. Three phases:
      *
-     * On a **belt machine** this is safety-critical: a bare `WORKOUT_MODE=IDLE` write does NOT stop
-     * the belt — the firmware treats the idle transition as advisory, so the belt keeps running until
-     * the user hits the physical Stop key (the user-reported bug). We instead command belt speed to 0
-     * *and* `PAUSE` the workout — both halt the belt — and confirm the `KPH` read-back reaches 0
-     * before returning, so we never close the USB transport with the halt unacknowledged.
-     *
-     * On a **bike / elliptical** nothing the app drives keeps moving, so a single `IDLE` write (the
-     * long-standing behaviour) is enough.
+     * 1. **Belt halt (belt machines only, safety-critical):** a bare `WORKOUT_MODE=IDLE` write does
+     *    NOT stop the belt — the firmware treats the idle transition as advisory, so the belt keeps
+     *    running until the user hits the physical Stop key (the user-reported bug). We command belt
+     *    speed to 0 *and* `PAUSE` (both halt the belt) and confirm the `KPH` read-back reaches 0
+     *    first ([haltBeltConfirmed]).
+     * 2. **Clean end:** write `WORKOUT_MODE=IDLE` (and `GRADE=0` on incline-capable belt machines so
+     *    they don't park raised). This tells the MCU the run is over so it runs its end-of-workout
+     *    housekeeping — which we never used to do, so we'd disconnect while it still thought a workout
+     *    was live.
+     * 3. **Ready-to-disconnect wait:** poll `IS_READY_TO_DISCONNECT` until the MCU asserts it
+     *    (bounded — a wedged MCU must not hang teardown). Closing the bus before the MCU is ready
+     *    leaves its USB state inconsistent until a full re-enumeration, which is why a run that ended
+     *    on the console could previously only be recovered by force-stopping the app.
      */
-    private suspend fun haltForTeardown() {
-        if (!detectedDeviceType.isBeltBased) {
-            writeMessage(V1Message.Outgoing.ReadWriteData(
-                writeFields = mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.IDLE.raw),
-            ))
-            delay(COMMAND_DELAY_MS)
-            return
-        }
+    private suspend fun gracefulEndForDisconnect() {
+        val isBelt = detectedDeviceType.isBeltBased
+        if (isBelt) haltBeltConfirmed()
 
+        // Clean end (write-only): tell the MCU the run is over so it does its end-of-workout
+        // housekeeping. GRADE=0 on belt machines so an incline trainer doesn't park raised.
+        writeMessage(V1Message.Outgoing.ReadWriteData(
+            writeFields = buildMap {
+                put(V1DataField.WORKOUT_MODE, WorkoutMode.IDLE.raw)
+                if (isBelt) put(V1DataField.GRADE, 0f)
+            },
+        ))
+        delay(COMMAND_DELAY_MS)
+
+        repeat(READY_POLL_ATTEMPTS) {
+            val response = sendReadWrite(readFields = setOf(V1DataField.IS_READY_TO_DISCONNECT))
+            val ready = response?.fields?.get(V1DataField.IS_READY_TO_DISCONNECT)
+            if (ready != null && ready >= READY_TO_DISCONNECT_TRUE) {
+                logger.i(TAG, "MCU ready to disconnect")
+                return
+            }
+            delay(READY_POLL_MS)
+        }
+        logger.w(TAG, "MCU never asserted IS_READY_TO_DISCONNECT within ${READY_POLL_ATTEMPTS * READY_POLL_MS}ms — proceeding")
+    }
+
+    /**
+     * Belt-machine halt loop: command `KPH=0` + `PAUSE` once, then poll the `KPH` read-back until the
+     * MCU acknowledges speed 0 (or we run out of attempts). Belt machines only — callers gate on
+     * [DeviceType.isBeltBased].
+     */
+    private suspend fun haltBeltConfirmed() {
         repeat(BELT_HALT_CONFIRM_ATTEMPTS) { attempt ->
-            // Assert the halt once, then poll the KPH read-back until the MCU acknowledges speed 0.
             val response = sendReadWrite(
                 writeFields = if (attempt == 0) mapOf(
                     V1DataField.KPH to 0f,
@@ -942,6 +970,12 @@ class V1Session(
         // reaches ~0 (confirming the MCU accepted the halt) before disconnecting.
         private const val BELT_HALT_CONFIRM_ATTEMPTS = 8
         private const val BELT_STOPPED_KPH = 0.1f
+
+        // Graceful teardown: after the clean-end write, poll IS_READY_TO_DISCONNECT until the MCU
+        // asserts it (BYTE field, so ~1 = ready), bounded so a wedged MCU can't hang teardown.
+        private const val READY_TO_DISCONNECT_TRUE = 0.5f
+        private const val READY_POLL_MS = 150L
+        private const val READY_POLL_ATTEMPTS = 10
 
         // Console-init field values: 1 = ENABLED (REQUIRE_START_REQUESTED) / LOCKED (IDLE_MODE_LOCKOUT),
         // 0 = DISABLED / UNLOCKED.

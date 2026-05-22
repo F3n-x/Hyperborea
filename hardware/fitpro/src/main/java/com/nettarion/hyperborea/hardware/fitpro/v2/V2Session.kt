@@ -139,12 +139,15 @@ class V2Session(
      * Belt machines must be explicitly stopped before the console drops to idle, or the belt keeps
      * running (the V1-confirmed bug; mirrored here for protocol parity). Command belt speed to 0 and
      * `PAUSED` — both halt the belt — then let the writes settle before teardown. V2 is event-driven
-     * with no synchronous read-back, so unlike [v1.V1Session.haltForTeardown] this is best-effort.
-     * Non-belt machines have nothing the app drives that keeps moving, so this is a no-op for them.
+     * with no synchronous read-back (and no ready-to-disconnect signal), so unlike V1's graceful
+     * teardown this is best-effort. Non-belt machines have nothing the app drives that keeps moving,
+     * so this is a no-op for them.
      */
     private suspend fun haltForTeardown() {
         if (!detectedDeviceType.isBeltBased) return
         transport.write(V2Codec.encode(V2Message.Outgoing.WriteFeature(V2FeatureId.TARGET_KPH, 0f)))
+        // Drop incline to 0 too, so an incline trainer doesn't park raised after teardown.
+        transport.write(V2Codec.encode(V2Message.Outgoing.WriteFeature(V2FeatureId.TARGET_GRADE, 0f)))
         transport.write(V2Codec.encode(
             V2Message.Outgoing.WriteFeature(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.PAUSED.raw),
         ))

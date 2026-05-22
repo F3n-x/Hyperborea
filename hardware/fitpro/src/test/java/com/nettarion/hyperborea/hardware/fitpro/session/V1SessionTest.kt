@@ -1609,4 +1609,58 @@ class V1SessionTest {
         if (this[6] != 0x00.toByte() || this[7] != 0x00.toByte()) return false // KPH = 0
         return this[8] == 0x03.toByte() // WORKOUT_MODE = PAUSE(3)
     }
+
+    /**
+     * True for the belt clean-end ReadWriteData stop() sends after the halt: writes GRADE (idx1 →
+     * section 0 bit 1) = 0 and WORKOUT_MODE (idx12 → section 1 bit 4) = IDLE(1). Encoding:
+     * `[device, len, cmd=0x02, writeNumSections=2, mask0=0x02, mask1=0x10, GRADE_lo, GRADE_hi, mode, …]`.
+     */
+    private fun ByteArray.isBeltCleanEndWrite(): Boolean {
+        if (size < 9 || this[2] != 0x02.toByte()) return false
+        if (this[3] != 0x02.toByte() || this[4] != 0x02.toByte() || this[5] != 0x10.toByte()) return false
+        if (this[6] != 0x00.toByte() || this[7] != 0x00.toByte()) return false // GRADE = 0
+        return this[8] == 0x01.toByte() // WORKOUT_MODE = IDLE(1)
+    }
+
+    // --- Graceful teardown: wait for ready-to-disconnect ---
+
+    @Test
+    fun `treadmill graceful stop writes a clean end and polls ready-to-disconnect before Disconnect`() = runTest {
+        // The fix for "can't restart without force-stop": end the workout cleanly (IDLE + GRADE 0)
+        // and wait for the MCU's IS_READY_TO_DISCONNECT before closing the bus. No responses are fed,
+        // so the bounded ready-wait times out and proceeds — also exercising the timeout path.
+        val session = startStreamingTreadmillSession()
+        val writesBefore = transport.writtenPackets.size
+
+        session.stop()
+        advanceUntilIdle()
+
+        val newPackets = transport.writtenPackets.drop(writesBefore)
+        val cleanEndIdx = newPackets.indexOfFirst { it.isBeltCleanEndWrite() }
+        // The single-field ready poll (field 116 → section 14, bit 4); the periodic poll reads many fields.
+        val readyIdx = newPackets.indexOfFirst { it.decodePollReadIndices() == setOf(116) }
+        val disconnectIdx = newPackets.indexOfFirst { it[2] == 0x05.toByte() }
+
+        assertThat(cleanEndIdx).isAtLeast(0)
+        assertThat(readyIdx).isGreaterThan(cleanEndIdx)
+        assertThat(disconnectIdx).isGreaterThan(readyIdx)
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Disconnected)
+    }
+
+    @Test
+    fun `bike graceful stop polls ready-to-disconnect before Disconnect`() = runTest {
+        val session = startStreamingSession()
+        val writesBefore = transport.writtenPackets.size
+
+        session.stop()
+        advanceUntilIdle()
+
+        val newPackets = transport.writtenPackets.drop(writesBefore)
+        val readyIdx = newPackets.indexOfFirst { it.decodePollReadIndices() == setOf(116) }
+        val disconnectIdx = newPackets.indexOfFirst { it[2] == 0x05.toByte() }
+        assertThat(readyIdx).isAtLeast(0)
+        assertThat(disconnectIdx).isGreaterThan(readyIdx)
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Disconnected)
+    }
+
 }
