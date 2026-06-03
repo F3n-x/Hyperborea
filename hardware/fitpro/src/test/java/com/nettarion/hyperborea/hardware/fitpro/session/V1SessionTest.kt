@@ -238,7 +238,6 @@ class V1SessionTest {
     private suspend fun respondToHandshake() {
         transport.emitIncoming(buildDeviceInfoResponse())
         transport.emitIncoming(buildConnectAck())
-        transport.emitIncoming(buildSupportedDevicesResponse())
         transport.emitIncoming(buildSystemInfoResponse())
         transport.emitIncoming(buildVersionInfoResponse())
         transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -310,17 +309,6 @@ class V1SessionTest {
 
     private suspend fun respondWithDataResponse() {
         transport.emitIncoming(buildDataResponsePacket(wattsValue = 180))
-    }
-
-    private fun buildSupportedDevicesResponse(vararg deviceIds: Int = intArrayOf(2, 7, 0x42)): ByteArray {
-        // device=2, len=TBD, cmd=0x80, status=0x02, count, deviceIds...
-        val count = deviceIds.size
-        val totalLen = 4 + 1 + count + 1 // header + count + ids + checksum
-        val data = byteArrayOf(
-            0x02, totalLen.toByte(), 0x80.toByte(), 0x02,
-            count.toByte(),
-        ) + deviceIds.map { it.toByte() }.toByteArray()
-        return data + V1Codec.checksum(data)
     }
 
     private fun buildConnectAck(): ByteArray {
@@ -472,7 +460,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -497,7 +484,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -534,7 +520,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = bikeWithLockout))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -596,7 +581,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(sw = 75))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             // No security response needed
@@ -875,7 +859,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -898,7 +881,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = 0)) // NONE — not a real equipment id
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -1363,7 +1345,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = supported))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -1394,7 +1375,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = emptySet()))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -1469,7 +1449,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = supported))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())
@@ -1560,7 +1539,6 @@ class V1SessionTest {
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
             transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedDevicesResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
             transport.emitIncoming(buildSecurityUnlockedResponse())

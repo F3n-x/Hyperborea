@@ -376,17 +376,7 @@ class V1Session(
 
         delay(COMMAND_DELAY_MS)
 
-        // 2. SupportedDevices → the sub-devices/sensors the controller manages (diagnostic only).
-        val supportedDevices = sendAndAwait(V1Message.Outgoing.SupportedDevices())
-        if (supportedDevices is V1Message.Incoming.SupportedDevicesResponse) {
-            logger.d(TAG, "Sub-devices: ${supportedDevices.deviceIds}")
-        } else {
-            logger.w(TAG, "SupportedDevices failed: $supportedDevices")
-        }
-
-        delay(COMMAND_DELAY_MS)
-
-        // 3. SystemInfo → partNumber, model
+        // 2. SystemInfo → partNumber, model
         val systemInfo = sendAndAwait(V1Message.Outgoing.SystemInfo())
         if (systemInfo is V1Message.Incoming.SystemInfoResponse) {
             partNumber = systemInfo.partNumber
@@ -402,7 +392,7 @@ class V1Session(
 
         delay(COMMAND_DELAY_MS)
 
-        // 4. VersionInfo → masterLibraryVersion
+        // 3. VersionInfo → masterLibraryVersion
         val versionInfo = sendAndAwait(V1Message.Outgoing.VersionInfo())
         if (versionInfo is V1Message.Incoming.VersionInfoResponse) {
             masterLibraryVersion = versionInfo.masterLibraryVersion
@@ -421,7 +411,7 @@ class V1Session(
 
         delay(COMMAND_DELAY_MS)
 
-        // 5. VerifySecurity (only if SW version > 75)
+        // 4. VerifySecurity (only if SW version > 75)
         if (softwareVersion > 75) {
             verifySecurity()
         } else {
@@ -430,7 +420,7 @@ class V1Session(
 
         delay(COMMAND_DELAY_MS)
 
-        // 6. Read startup fields (device limits + equipment stats)
+        // 5. Read startup fields (device limits + equipment stats)
         readStartupFields(equipmentDeviceId)
     }
 

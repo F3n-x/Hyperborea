@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-06-02
+- **Spin-bike consoles that previously failed to connect now pair and stream.** On some bikes — e.g. the NordicTrack S15i Commercial Studio Cycle — Hyperborea would try to identify the equipment, fail, and retry forever: the dashboard never showed the device and no workout could start. During the connection handshake the app sent a diagnostic "supported devices" query that these consoles' controllers don't answer; the unanswered command left the USB link wedged, so every following command failed and the connection dropped, looping on each USB re-attach. That query only ever fed an unused diagnostic, so it's been removed — the handshake now goes straight from connect to reading the equipment's system info, which these consoles complete normally. Bikes that already worked are unaffected (and connect a little faster).
+
 ## [1.2.9] - 2026-05-21
 - **A workout you end on the treadmill console can now be restarted without force-quitting the app.** After a run ended on the console (the long-beep stop), neither the app's Start nor the physical Start key would begin a new workout until Hyperborea was force-stopped and reopened. The cause was an abrupt USB teardown: on stop the app closed the connection the instant it sent the disconnect, while the equipment's controller was still finishing its end-of-workout housekeeping — leaving the link in a state that only a full reconnect (which force-quitting forced) could clear. Stopping now ends the workout cleanly (and drops incline to 0 on incline-capable machines) and waits for the controller to signal it's ready before releasing the USB link, so the next workout starts normally from the app's Start button.
 
