@@ -45,6 +45,37 @@ class V1CodecTest {
     }
 
     @Test
+    fun `encode SupportedCommands produces correct packet`() {
+        val packets = V1Codec.encode(V1Message.Outgoing.SupportedCommands(V1Message.DEVICE_SPIN_BIKE))
+        assertThat(packets).hasSize(1)
+        assertThat(packets[0][0]).isEqualTo(0x08.toByte()) // DEVICE_SPIN_BIKE
+        assertThat(packets[0][2]).isEqualTo(0x88.toByte()) // CMD_SUPPORTED_COMMANDS
+        assertThat(V1Codec.verifyChecksum(packets[0])).isTrue()
+    }
+
+    @Test
+    fun `decode SupportedCommandsResponse parses command opcodes`() {
+        // device=8, len, cmd=0x88, status=0x02, opcodes=[0x82, 0x84, 0x90] (no count byte), checksum
+        val data = byteArrayOf(
+            0x08, 0x08, 0x88.toByte(), 0x02,
+            0x82.toByte(), 0x84.toByte(), 0x90.toByte(),
+        )
+        val packet = data + V1Codec.checksum(data)
+        val decoded = V1Codec.decodeSingle(packet)
+        assertThat(decoded).isInstanceOf(V1Message.Incoming.SupportedCommandsResponse::class.java)
+        val response = decoded as V1Message.Incoming.SupportedCommandsResponse
+        assertThat(response.commandIds).containsExactly(0x82, 0x84, 0x90)
+    }
+
+    @Test
+    fun `decode SupportedCommandsResponse with no commands`() {
+        val data = byteArrayOf(0x08, 0x05, 0x88.toByte(), 0x02)
+        val packet = data + V1Codec.checksum(data)
+        val decoded = V1Codec.decodeSingle(packet) as V1Message.Incoming.SupportedCommandsResponse
+        assertThat(decoded.commandIds).isEmpty()
+    }
+
+    @Test
     fun `encode Connect produces packet with correct command ID`() {
         val packets = V1Codec.encode(V1Message.Outgoing.Connect())
         assertThat(packets).hasSize(1)

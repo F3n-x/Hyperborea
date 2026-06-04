@@ -13,6 +13,7 @@ sealed interface V1Message {
 
     sealed interface Outgoing : V1Message {
         data class SupportedDevices(val deviceId: Int = DEVICE_MAIN) : Outgoing
+        data class SupportedCommands(val deviceId: Int = DEVICE_MAIN) : Outgoing
         data class Connect(val deviceId: Int = DEVICE_FITNESS_BIKE) : Outgoing
         data class Disconnect(val deviceId: Int = DEVICE_FITNESS_BIKE) : Outgoing
         data class DeviceInfo(val deviceId: Int = DEVICE_MAIN) : Outgoing
@@ -37,6 +38,8 @@ sealed interface V1Message {
 
     sealed interface Incoming : V1Message {
         data class SupportedDevicesResponse(val deviceIds: List<Int>) : Incoming
+        /** The set of request command opcodes (e.g. [DEVICE_MAIN]-targeted 0x82 SystemInfo) the controller declares it accepts. */
+        data class SupportedCommandsResponse(val commandIds: Set<Int>) : Incoming
         data class ConnectAck(val deviceId: Int) : Incoming
         data class DisconnectAck(val deviceId: Int) : Incoming
         data class DeviceInfoResponse(
@@ -114,6 +117,14 @@ sealed interface V1Message {
         const val STATUS_DONE = 0x02
         const val STATUS_IN_PROGRESS = 0x03
         const val STATUS_SECURITY_BLOCK = 0x08
+
+        // Request command opcodes, as reported in a SupportedCommandsResponse. Used to gate the
+        // optional handshake steps: a controller that doesn't list a command will wedge the USB
+        // link if it's sent one anyway (observed on the NordicTrack S15i spin bike, which omits
+        // SystemInfo). These match the CMD_* bytes in V1Codec.
+        const val CMD_SYSTEM_INFO = 0x82
+        const val CMD_VERSION_INFO = 0x84
+        const val CMD_VERIFY_SECURITY = 0x90
     }
 }
 

@@ -376,29 +376,48 @@ class V1Session(
 
         delay(COMMAND_DELAY_MS)
 
-        // 2. SystemInfo → partNumber, model
-        val systemInfo = sendAndAwait(V1Message.Outgoing.SystemInfo())
-        if (systemInfo is V1Message.Incoming.SystemInfoResponse) {
-            partNumber = systemInfo.partNumber
-            model = systemInfo.model
-            logger.d(TAG, "System info: partNumber=$partNumber, model=$model")
-            powerCurveIndex = DeviceDatabase.powerCurveIndexForPartNumber(partNumber)
-            if (powerCurveIndex != null) {
-                logger.i(TAG, "Power curve table: $powerCurveIndex (from part number $partNumber)")
-            }
-        } else {
-            logger.w(TAG, "Expected SystemInfoResponse, got: $systemInfo")
-        }
+        // 2. SupportedCommands → the request opcodes this controller actually accepts. Some
+        //    controllers (e.g. the NordicTrack S15i spin bike) don't implement SystemInfo and
+        //    will wedge the USB link if sent a command they don't support, so we ask first and
+        //    gate the optional steps below. Addressed to the equipment device id, mirroring the
+        //    stock console's bring-up. A null/garbled answer means "couldn't ask" → assume every
+        //    command is supported, preserving the pre-gating behaviour that works on the bikes and
+        //    treadmills we've always supported.
+        val supportedCommands = querySupportedCommands(equipmentDeviceId)
 
         delay(COMMAND_DELAY_MS)
 
-        // 3. VersionInfo → masterLibraryVersion
-        val versionInfo = sendAndAwait(V1Message.Outgoing.VersionInfo())
-        if (versionInfo is V1Message.Incoming.VersionInfoResponse) {
-            masterLibraryVersion = versionInfo.masterLibraryVersion
-            logger.d(TAG, "Version info: masterLib=$masterLibraryVersion, build=${versionInfo.masterLibraryBuild}")
+        // 3. SystemInfo → partNumber, model (skipped if the controller doesn't declare it)
+        if (isCommandSupported(supportedCommands, V1Message.CMD_SYSTEM_INFO)) {
+            val systemInfo = sendAndAwait(V1Message.Outgoing.SystemInfo())
+            if (systemInfo is V1Message.Incoming.SystemInfoResponse) {
+                partNumber = systemInfo.partNumber
+                model = systemInfo.model
+                logger.d(TAG, "System info: partNumber=$partNumber, model=$model")
+                powerCurveIndex = DeviceDatabase.powerCurveIndexForPartNumber(partNumber)
+                if (powerCurveIndex != null) {
+                    logger.i(TAG, "Power curve table: $powerCurveIndex (from part number $partNumber)")
+                }
+            } else {
+                logger.w(TAG, "Expected SystemInfoResponse, got: $systemInfo")
+            }
+            delay(COMMAND_DELAY_MS)
         } else {
-            logger.w(TAG, "Expected VersionInfoResponse, got: $versionInfo")
+            logger.i(TAG, "Controller doesn't support SystemInfo — skipping (power-curve lookup unavailable)")
+        }
+
+        // 4. VersionInfo → masterLibraryVersion (skipped if the controller doesn't declare it)
+        if (isCommandSupported(supportedCommands, V1Message.CMD_VERSION_INFO)) {
+            val versionInfo = sendAndAwait(V1Message.Outgoing.VersionInfo())
+            if (versionInfo is V1Message.Incoming.VersionInfoResponse) {
+                masterLibraryVersion = versionInfo.masterLibraryVersion
+                logger.d(TAG, "Version info: masterLib=$masterLibraryVersion, build=${versionInfo.masterLibraryBuild}")
+            } else {
+                logger.w(TAG, "Expected VersionInfoResponse, got: $versionInfo")
+            }
+            delay(COMMAND_DELAY_MS)
+        } else {
+            logger.i(TAG, "Controller doesn't support VersionInfo — skipping")
         }
 
         _deviceIdentity.value = DeviceIdentity(
@@ -409,20 +428,40 @@ class V1Session(
             partNumber = partNumber.toString(),
         )
 
-        delay(COMMAND_DELAY_MS)
-
-        // 4. VerifySecurity (only if SW version > 75)
-        if (softwareVersion > 75) {
+        // 5. VerifySecurity (only if SW version > 75 and the controller declares it — the security
+        //    hash is derived from SystemInfo/VersionInfo values, so a controller that omits those
+        //    can't be unlocked this way and doesn't ask to be).
+        if (softwareVersion > 75 && isCommandSupported(supportedCommands, V1Message.CMD_VERIFY_SECURITY)) {
             verifySecurity()
+            delay(COMMAND_DELAY_MS)
         } else {
-            logger.d(TAG, "Skipping security verification (sw=$softwareVersion <= 75)")
+            logger.d(TAG, "Skipping security verification (sw=$softwareVersion, supported=${supportedCommands?.contains(V1Message.CMD_VERIFY_SECURITY) ?: "assumed"})")
         }
 
-        delay(COMMAND_DELAY_MS)
-
-        // 5. Read startup fields (device limits + equipment stats)
+        // 6. Read startup fields (device limits + equipment stats)
         readStartupFields(equipmentDeviceId)
     }
+
+    /**
+     * Asks the controller which request command opcodes it accepts. Returns the declared set, or
+     * `null` if the controller didn't answer (or returned something unparseable) — callers treat
+     * `null` as "assume everything is supported" via [isCommandSupported]. Addressed to the
+     * equipment device id, matching the stock console.
+     */
+    private suspend fun querySupportedCommands(equipmentDeviceId: Int): Set<Int>? {
+        val response = sendAndAwait(V1Message.Outgoing.SupportedCommands(equipmentDeviceId))
+        return if (response is V1Message.Incoming.SupportedCommandsResponse) {
+            logger.i(TAG, "Supported commands: ${response.commandIds.sorted().joinToString { "0x%02X".format(it) }}")
+            response.commandIds
+        } else {
+            logger.w(TAG, "SupportedCommands query failed ($response) — assuming all commands supported")
+            null
+        }
+    }
+
+    /** True when [supportedCommands] is `null` (couldn't ask → assume yes) or declares [commandId]. */
+    private fun isCommandSupported(supportedCommands: Set<Int>?, commandId: Int): Boolean =
+        supportedCommands == null || commandId in supportedCommands
 
     private suspend fun verifySecurity() {
         val hash = V1Security.calculateHash(serialNumber, partNumber, model)

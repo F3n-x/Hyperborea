@@ -13,6 +13,7 @@ object V1Codec {
     private const val CMD_VERSION_INFO: Byte = 0x84.toByte()
     private const val CMD_VERIFY_SECURITY: Byte = 0x90.toByte()
     private const val CMD_SUPPORTED_DEVICES: Byte = 0x80.toByte()
+    private const val CMD_SUPPORTED_COMMANDS: Byte = 0x88.toByte()
     private const val CMD_CALIBRATE: Byte = 0x06
 
     private const val HEADER_SIZE = 4 // device, length, command, status/payload[0]
@@ -25,6 +26,9 @@ object V1Codec {
     fun encode(message: V1Message.Outgoing): List<ByteArray> = when (message) {
         is V1Message.Outgoing.SupportedDevices -> listOf(
             encodeSimple(message.deviceId, CMD_SUPPORTED_DEVICES, byteArrayOf())
+        )
+        is V1Message.Outgoing.SupportedCommands -> listOf(
+            encodeSimple(message.deviceId, CMD_SUPPORTED_COMMANDS, byteArrayOf())
         )
         is V1Message.Outgoing.Connect -> listOf(
             encodeSimple(message.deviceId, CMD_CONNECT, byteArrayOf())
@@ -86,6 +90,7 @@ object V1Codec {
                 decodeDataResponse(status, payload)
             }
             CMD_SUPPORTED_DEVICES -> decodeSupportedDevicesResponse(data)
+            CMD_SUPPORTED_COMMANDS -> decodeSupportedCommandsResponse(data)
             CMD_DEVICE_INFO -> decodeDeviceInfoResponse(deviceId, data)
             CMD_SYSTEM_INFO -> decodeSystemInfoResponse(data)
             CMD_VERSION_INFO -> decodeVersionInfoResponse(data)
@@ -360,6 +365,17 @@ object V1Codec {
             if (5 + i < data.size) data[5 + i].toInt() and 0xFF else null
         }
         return V1Message.Incoming.SupportedDevicesResponse(ids)
+    }
+
+    private fun decodeSupportedCommandsResponse(data: ByteArray): V1Message.Incoming.SupportedCommandsResponse {
+        // Layout: [0]device, [1]len, [2]cmd, [3]status, [4..len-2] one byte per supported command
+        // opcode, [len-1] checksum. Unlike SupportedDevices there's no leading count byte — every
+        // body byte is a command id.
+        val ids = mutableSetOf<Int>()
+        for (i in HEADER_SIZE until data.size - 1) {
+            ids.add(data[i].toInt() and 0xFF)
+        }
+        return V1Message.Incoming.SupportedCommandsResponse(ids)
     }
 
     private fun decodeDeviceInfoResponse(deviceId: Int, data: ByteArray): V1Message.Incoming.DeviceInfoResponse {

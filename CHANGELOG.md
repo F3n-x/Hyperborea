@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [1.2.11] - 2026-06-03
+- **Bike consoles that only implement part of the FitPro command set now connect.** Building on 1.2.10: removing the `SupportedDevices` query let the NordicTrack S15i spin bike get one step further, but it then stalled at `SystemInfo` the same way — this controller answers `DeviceInfo` and `Connect` but not `SystemInfo`, and sending a controller any command it doesn't implement wedges the USB link (so the dashboard never showed the bike and no workout could start). The app now does what the stock console does: right after connecting it asks the controller which commands it accepts, then only sends `SystemInfo`/`VersionInfo`/security verification if the controller lists them — otherwise it skips straight to the live data stream. Power-curve and security details are simply left at their defaults for controllers that don't expose them; the per-second workout data (speed, cadence, power, resistance, incline) is unaffected. Consoles that already worked are unchanged — they report the full command set, so nothing is skipped.
+
 ## [1.2.10] - 2026-06-02
 - **Spin-bike consoles that previously failed to connect now pair and stream.** On some bikes — e.g. the NordicTrack S15i Commercial Studio Cycle — Hyperborea would try to identify the equipment, fail, and retry forever: the dashboard never showed the device and no workout could start. During the connection handshake the app sent a diagnostic "supported devices" query that these consoles' controllers don't answer; the unanswered command left the USB link wedged, so every following command failed and the connection dropped, looping on each USB re-attach. That query only ever fed an unused diagnostic, so it's been removed — the handshake now goes straight from connect to reading the equipment's system info, which these consoles complete normally. Bikes that already worked are unaffected (and connect a little faster).
 
