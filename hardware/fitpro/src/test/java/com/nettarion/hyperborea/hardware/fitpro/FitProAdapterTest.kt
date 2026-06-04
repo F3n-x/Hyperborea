@@ -276,7 +276,6 @@ class FitProAdapterTest {
         // V1 handshake: DeviceInfo → Connect → SupportedCommands → SystemInfo → VersionInfo → Security → Capabilities
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -317,7 +316,6 @@ class FitProAdapterTest {
 
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
@@ -368,7 +366,6 @@ class FitProAdapterTest {
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
@@ -391,7 +388,6 @@ class FitProAdapterTest {
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
@@ -413,7 +409,6 @@ class FitProAdapterTest {
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())
@@ -454,11 +449,6 @@ class FitProAdapterTest {
     }
 
     // --- V1 handshake packet builders ---
-
-    private fun buildConnectAck(): ByteArray {
-        val data = byteArrayOf(0x07, 0x04, 0x04)
-        return data + V1Codec.checksum(data)
-    }
 
     private fun buildSupportedCommandsResponse(): ByteArray {
         // device=8, len, cmd=0x88, status=0x02, SystemInfo/VersionInfo/VerifySecurity opcodes, checksum
@@ -540,7 +530,6 @@ class FitProAdapterTest {
         val adapter = createAdapter(this, productId = 2)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse(model = 2117))
             transport.emitIncoming(buildVersionInfoResponse())

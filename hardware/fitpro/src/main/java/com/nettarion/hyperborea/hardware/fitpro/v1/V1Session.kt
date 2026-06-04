@@ -342,52 +342,43 @@ class V1Session(
     private suspend fun handshake() {
         // 0. DeviceInfo (from MAIN) → serialNumber, softwareVersion, and the real equipment
         //    device ID: the MCU echoes its own device type in byte 0 of the response.
-        val deviceInfo = sendAndAwait(V1Message.Outgoing.DeviceInfo())
-        val equipmentDeviceId: Int
-        if (deviceInfo is V1Message.Incoming.DeviceInfoResponse) {
-            softwareVersion = deviceInfo.softwareVersion
-            hardwareVersion = deviceInfo.hardwareVersion
-            serialNumber = deviceInfo.serialNumber
-            supportedBitFields = deviceInfo.supportedBitFields
-            equipmentDeviceId = deviceInfo.deviceId.takeIf { it in V1Message.EQUIPMENT_DEVICE_IDS }
-                ?: V1Message.DEVICE_FITNESS_BIKE
-            logger.i(
-                TAG,
-                "Device info: sw=$softwareVersion, hw=$hardwareVersion, serial=$serialNumber, " +
-                    "equipmentDeviceId=$equipmentDeviceId, supportedBitFields=${supportedBitFields.size}",
-            )
-            pollFields = computePollFields(supportedBitFields)
-        } else {
-            logger.w(TAG, "Expected DeviceInfoResponse, got: $deviceInfo — defaulting equipment to FITNESS_BIKE")
-            equipmentDeviceId = V1Message.DEVICE_FITNESS_BIKE
-        }
+        // DeviceInfo is the gatekeeper: every real controller answers it, and we need its sw /
+        // supportedBitFields / equipment id to do anything useful. With no Connect step after it,
+        // this is also where we detect "nothing is responding" — so a missing/garbled response is a
+        // hard failure rather than something we paper over with defaults.
+        val deviceInfo = sendAndAwait(V1Message.Outgoing.DeviceInfo()) as? V1Message.Incoming.DeviceInfoResponse
+            ?: throw IllegalStateException("No DeviceInfo response — controller not responding")
+        softwareVersion = deviceInfo.softwareVersion
+        hardwareVersion = deviceInfo.hardwareVersion
+        serialNumber = deviceInfo.serialNumber
+        supportedBitFields = deviceInfo.supportedBitFields
+        val equipmentDeviceId = deviceInfo.deviceId.takeIf { it in V1Message.EQUIPMENT_DEVICE_IDS }
+            ?: V1Message.DEVICE_FITNESS_BIKE
+        logger.i(
+            TAG,
+            "Device info: sw=$softwareVersion, hw=$hardwareVersion, serial=$serialNumber, " +
+                "equipmentDeviceId=$equipmentDeviceId, supportedBitFields=${supportedBitFields.size}",
+        )
+        pollFields = computePollFields(supportedBitFields)
         detectedDeviceType = DeviceDatabase.deviceTypeFromEquipmentId(equipmentDeviceId)
         logger.d(TAG, "Detected device type: $detectedDeviceType")
 
         delay(COMMAND_DELAY_MS)
 
-        // 1. Connect to the equipment device.
-        val connectResponse = sendAndAwait(V1Message.Outgoing.Connect(equipmentDeviceId))
-            ?: throw IllegalStateException("Connect handshake timed out")
-        if (connectResponse !is V1Message.Incoming.ConnectAck) {
-            throw IllegalStateException("Expected ConnectAck, got: $connectResponse")
-        }
-        logger.d(TAG, "Connected to device ${connectResponse.deviceId}")
-
-        delay(COMMAND_DELAY_MS)
-
-        // 2. SupportedCommands → the request opcodes this controller actually accepts. Some
-        //    controllers (e.g. the NordicTrack S15i spin bike) don't implement SystemInfo and
-        //    will wedge the USB link if sent a command they don't support, so we ask first and
-        //    gate the optional steps below. Addressed to the equipment device id, mirroring the
-        //    stock console's bring-up. A null/garbled answer means "couldn't ask" → assume every
-        //    command is supported, preserving the pre-gating behaviour that works on the bikes and
-        //    treadmills we've always supported.
+        // 1. SupportedCommands → the request opcodes this controller accepts; gates every optional
+        //    step below. We deliberately send NO Connect command first: the stock console firmware
+        //    never sends one (it brings the link up at the transport layer), and sending our legacy
+        //    Connect makes some controllers — the NordicTrack S15i spin bike — stop answering this
+        //    and the following meta-queries, which then wedges the USB link. Addressed to the
+        //    equipment device id, mirroring the stock bring-up. If the controller doesn't answer (or
+        //    doesn't list a command) we skip the optional steps and go straight to the data poll,
+        //    exactly as the stock firmware does — sending a controller a command it doesn't
+        //    implement wedges it.
         val supportedCommands = querySupportedCommands(equipmentDeviceId)
 
         delay(COMMAND_DELAY_MS)
 
-        // 3. SystemInfo → partNumber, model (skipped if the controller doesn't declare it)
+        // 2. SystemInfo → partNumber, model (skipped if the controller doesn't declare it)
         if (isCommandSupported(supportedCommands, V1Message.CMD_SYSTEM_INFO)) {
             val systemInfo = sendAndAwait(V1Message.Outgoing.SystemInfo())
             if (systemInfo is V1Message.Incoming.SystemInfoResponse) {
@@ -406,7 +397,7 @@ class V1Session(
             logger.i(TAG, "Controller doesn't support SystemInfo — skipping (power-curve lookup unavailable)")
         }
 
-        // 4. VersionInfo → masterLibraryVersion (skipped if the controller doesn't declare it)
+        // 3. VersionInfo → masterLibraryVersion (skipped if the controller doesn't declare it)
         if (isCommandSupported(supportedCommands, V1Message.CMD_VERSION_INFO)) {
             val versionInfo = sendAndAwait(V1Message.Outgoing.VersionInfo())
             if (versionInfo is V1Message.Incoming.VersionInfoResponse) {
@@ -428,25 +419,26 @@ class V1Session(
             partNumber = partNumber.toString(),
         )
 
-        // 5. VerifySecurity (only if SW version > 75 and the controller declares it — the security
+        // 4. VerifySecurity (only if SW version > 75 and the controller declares it — the security
         //    hash is derived from SystemInfo/VersionInfo values, so a controller that omits those
         //    can't be unlocked this way and doesn't ask to be).
         if (softwareVersion > 75 && isCommandSupported(supportedCommands, V1Message.CMD_VERIFY_SECURITY)) {
             verifySecurity()
             delay(COMMAND_DELAY_MS)
         } else {
-            logger.d(TAG, "Skipping security verification (sw=$softwareVersion, supported=${supportedCommands?.contains(V1Message.CMD_VERIFY_SECURITY) ?: "assumed"})")
+            logger.d(TAG, "Skipping security verification (sw=$softwareVersion, declared=${supportedCommands?.contains(V1Message.CMD_VERIFY_SECURITY) ?: false})")
         }
 
-        // 6. Read startup fields (device limits + equipment stats)
+        // 5. Read startup fields (device limits + equipment stats)
         readStartupFields(equipmentDeviceId)
     }
 
     /**
      * Asks the controller which request command opcodes it accepts. Returns the declared set, or
-     * `null` if the controller didn't answer (or returned something unparseable) — callers treat
-     * `null` as "assume everything is supported" via [isCommandSupported]. Addressed to the
-     * equipment device id, matching the stock console.
+     * `null` if the controller didn't answer (or returned something unparseable). Callers treat
+     * `null` (and any command not in the set) as "not supported, skip it" via [isCommandSupported]
+     * — matching the stock console, which only sends a command the controller lists and otherwise
+     * goes straight to the data poll. Addressed to the equipment device id.
      */
     private suspend fun querySupportedCommands(equipmentDeviceId: Int): Set<Int>? {
         val response = sendAndAwait(V1Message.Outgoing.SupportedCommands(equipmentDeviceId))
@@ -454,14 +446,14 @@ class V1Session(
             logger.i(TAG, "Supported commands: ${response.commandIds.sorted().joinToString { "0x%02X".format(it) }}")
             response.commandIds
         } else {
-            logger.w(TAG, "SupportedCommands query failed ($response) — assuming all commands supported")
+            logger.w(TAG, "SupportedCommands query failed ($response) — skipping optional commands, going straight to poll")
             null
         }
     }
 
-    /** True when [supportedCommands] is `null` (couldn't ask → assume yes) or declares [commandId]. */
+    /** True only when [supportedCommands] was read and declares [commandId]; `null`/unlisted → skip. */
     private fun isCommandSupported(supportedCommands: Set<Int>?, commandId: Int): Boolean =
-        supportedCommands == null || commandId in supportedCommands
+        supportedCommands != null && commandId in supportedCommands
 
     private suspend fun verifySecurity() {
         val hash = V1Security.calculateHash(serialNumber, partNumber, model)

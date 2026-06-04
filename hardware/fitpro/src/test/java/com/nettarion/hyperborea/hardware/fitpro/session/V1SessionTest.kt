@@ -58,7 +58,7 @@ class V1SessionTest {
     }
 
     @Test
-    fun `start sends DeviceInfo then Connect`() = runTest {
+    fun `start sends DeviceInfo then SupportedCommands, no Connect`() = runTest {
         val session = createSession(this)
 
         backgroundScope.launch {
@@ -71,8 +71,9 @@ class V1SessionTest {
         assertThat(transport.writtenPackets).isNotEmpty()
         // First packet is DeviceInfo (0x81) — its response reports the equipment device type
         assertThat(transport.writtenPackets[0][2]).isEqualTo(0x81.toByte())
-        // Second packet is Connect (0x04) to that device
-        assertThat(transport.writtenPackets[1][2]).isEqualTo(0x04)
+        // Second is SupportedCommands (0x88) — the stock bring-up; we never send a Connect (0x04)
+        assertThat(transport.writtenPackets[1][2]).isEqualTo(0x88.toByte())
+        assertThat(transport.writtenPackets.map { it[2] }).doesNotContain(0x04.toByte())
     }
 
     @Test
@@ -237,7 +238,6 @@ class V1SessionTest {
 
     private suspend fun respondToHandshake() {
         transport.emitIncoming(buildDeviceInfoResponse())
-        transport.emitIncoming(buildConnectAck())
         transport.emitIncoming(buildSupportedCommandsResponse())
         transport.emitIncoming(buildSystemInfoResponse())
         transport.emitIncoming(buildVersionInfoResponse())
@@ -310,11 +310,6 @@ class V1SessionTest {
 
     private suspend fun respondWithDataResponse() {
         transport.emitIncoming(buildDataResponsePacket(wattsValue = 180))
-    }
-
-    private fun buildConnectAck(): ByteArray {
-        val data = byteArrayOf(0x07, 0x04, 0x04)
-        return data + V1Codec.checksum(data)
     }
 
     // device=8, len, cmd=0x88, status=0x02, one byte per supported command opcode, checksum.
@@ -470,7 +465,6 @@ class V1SessionTest {
         // confirmation reads all time out.
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse())
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -495,7 +489,6 @@ class V1SessionTest {
 
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -532,7 +525,6 @@ class V1SessionTest {
 
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = bikeWithLockout))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -594,7 +586,6 @@ class V1SessionTest {
 
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(sw = 75))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -873,7 +864,6 @@ class V1SessionTest {
 
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -896,7 +886,6 @@ class V1SessionTest {
 
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = 0)) // NONE — not a real equipment id
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -917,12 +906,11 @@ class V1SessionTest {
         val session = createSession(this)
 
         backgroundScope.launch {
-            // Spin bike (sw=83 > 75) whose controller only accepts ReadWriteData (0x02) and Connect
-            // (0x04) — it omits SystemInfo (0x82), VersionInfo (0x84) and VerifySecurity (0x90).
-            // Sending any of those wedges its USB link, so the session must not send them. (S15i.)
+            // Spin bike (sw=83 > 75) whose controller only declares ReadWriteData (0x02) — it omits
+            // SystemInfo (0x82), VersionInfo (0x84) and VerifySecurity (0x90). Sending any of those
+            // wedges its USB link, so the session must not send them. (S15i.)
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_SPIN_BIKE, sw = 83))
-            transport.emitIncoming(buildConnectAck())
-            transport.emitIncoming(buildSupportedCommandsResponse(0x02, 0x04))
+            transport.emitIncoming(buildSupportedCommandsResponse(0x02))
             transport.emitIncoming(buildCapabilityResponse()) // readStartupFields (ReadWriteData)
             respondToConsoleStartup()
         }
@@ -933,6 +921,33 @@ class V1SessionTest {
         assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
         val writtenCommands = transport.writtenPackets.map { it[2] }
         assertThat(writtenCommands).contains(0x88.toByte())       // did ask SupportedCommands
+        assertThat(writtenCommands).doesNotContain(0x04.toByte()) // never sent Connect
+        assertThat(writtenCommands).doesNotContain(0x82.toByte()) // never sent SystemInfo
+        assertThat(writtenCommands).doesNotContain(0x84.toByte()) // never sent VersionInfo
+        assertThat(writtenCommands).doesNotContain(0x90.toByte()) // never sent VerifySecurity
+    }
+
+    @Test
+    fun `handshake skips optional commands and polls when the controller never answers SupportedCommands`() = runTest {
+        val session = createSession(this)
+
+        backgroundScope.launch {
+            // Controller answers DeviceInfo but not the SupportedCommands query — the read returns a
+            // non-matching packet (here the startup-field ReadWriteData ack stands in for "no proper
+            // SupportedCommands answer"). The session must treat that as "skip the optional commands"
+            // and go straight to the data poll, not send SystemInfo and wedge the link.
+            transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_SPIN_BIKE, sw = 83))
+            transport.emitIncoming(buildReadWriteAck())        // consumed by the SupportedCommands read → null
+            transport.emitIncoming(buildCapabilityResponse())  // readStartupFields (ReadWriteData)
+            respondToConsoleStartup()
+        }
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        val writtenCommands = transport.writtenPackets.map { it[2] }
+        assertThat(writtenCommands).doesNotContain(0x04.toByte()) // never sent Connect
         assertThat(writtenCommands).doesNotContain(0x82.toByte()) // never sent SystemInfo
         assertThat(writtenCommands).doesNotContain(0x84.toByte()) // never sent VersionInfo
         assertThat(writtenCommands).doesNotContain(0x90.toByte()) // never sent VerifySecurity
@@ -1387,7 +1402,6 @@ class V1SessionTest {
         val session = createSession(this)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = supported))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -1418,7 +1432,6 @@ class V1SessionTest {
         val session = createSession(this)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = emptySet()))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -1493,7 +1506,6 @@ class V1SessionTest {
         val session = createSession(this)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(supportedBitFields = supported))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
@@ -1584,7 +1596,6 @@ class V1SessionTest {
         val session = createSession(this)
         backgroundScope.launch {
             transport.emitIncoming(buildDeviceInfoResponse(deviceId = V1Message.DEVICE_TREADMILL))
-            transport.emitIncoming(buildConnectAck())
             transport.emitIncoming(buildSupportedCommandsResponse())
             transport.emitIncoming(buildSystemInfoResponse())
             transport.emitIncoming(buildVersionInfoResponse())
