@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [1.2.13] - 2026-06-06
 - **New "Screen Sleep" setting lets the console screen turn off after a period of inactivity.** The console screen previously stayed on indefinitely. Under Settings → Display you can now enable Screen Sleep and choose an idle timeout (2, 5, 10, or 30 minutes); the display stays on the whole time you're working out and only sleeps once you've stopped and stopped touching the screen. Off by default — existing behaviour is unchanged until you turn it on. Enabling it asks for the one-time "modify system settings" permission; turning it back off restores the screen timeout the console had before.
 
 ## [1.2.12] - 2026-06-04
