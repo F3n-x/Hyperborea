@@ -55,4 +55,13 @@ class DisplaySettingsViewModel @Inject constructor(
     fun reapplyScreenSleep() {
         screenSleepController.reapplyTimeout()
     }
+
+    /**
+     * Start watching for the WRITE_SETTINGS grant so the app can pull itself back to the foreground
+     * once granted — these consoles have no nav bar for the user to return on their own. Call this
+     * right before launching the system settings screen.
+     */
+    fun beginAwaitWriteSettingsGrant() {
+        screenSleepController.awaitWriteSettingsGrant()
+    }
 }

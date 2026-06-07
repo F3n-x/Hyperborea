@@ -5,17 +5,21 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import com.nettarion.hyperborea.MainActivity
 import com.nettarion.hyperborea.core.AppLogger
 import com.nettarion.hyperborea.core.orchestration.OrchestratorState
 import com.nettarion.hyperborea.core.profile.UserPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -33,6 +37,10 @@ import javax.inject.Singleton
  * [Settings.ACTION_MANAGE_WRITE_SETTINGS] on API 23+; auto-granted at install below that). The
  * original timeout is saved before the first override and restored when the feature is disabled,
  * so we never leave the console permanently changed.
+ *
+ * These consoles are kiosks with no navigation bar, so a user sent to the system WRITE_SETTINGS
+ * screen often can't get back. [awaitWriteSettingsGrant] watches for the grant and brings the app
+ * back to the foreground itself — see that method for the background-activity-launch caveats.
  */
 @Singleton
 class ScreenSleepController @Inject constructor(
@@ -45,6 +53,8 @@ class ScreenSleepController @Inject constructor(
 ) {
 
     private val ownPrefs = context.getSharedPreferences("screen_sleep", Context.MODE_PRIVATE)
+
+    private var grantWatchJob: Job? = null
 
     /**
      * Whether the Activity should hold `FLAG_KEEP_SCREEN_ON` right now: only when the feature is
@@ -86,6 +96,47 @@ class ScreenSleepController @Inject constructor(
 
     /** Re-evaluate and apply the system timeout — e.g. after the user returns from granting access. */
     fun reapplyTimeout() = applyTimeout()
+
+    /**
+     * After the user is sent to the system WRITE_SETTINGS screen, watch for the grant and bring the
+     * app back to the foreground automatically — these kiosks have no nav bar, so the user often
+     * can't return on their own. Polls [canWriteSettings]; on success it applies the timeout and
+     * relaunches [MainActivity], then stops. Gives up (and logs) after [GRANT_WATCH_TIMEOUT_MS].
+     *
+     * The auto-return is a background Activity start. That's unrestricted on API < 29 (Android 9
+     * and below — most of this fleet), so it works there with no further conditions. On API 29+ it
+     * needs the SYSTEM_ALERT_WINDOW background-launch exemption (and API 35+ additionally a visible
+     * overlay); where the platform blocks the relaunch we just log it — the permission is still
+     * granted and the timeout applied, so it's no worse than the user navigating back by hand.
+     */
+    fun awaitWriteSettingsGrant() {
+        if (canWriteSettings()) return
+        grantWatchJob?.cancel()
+        grantWatchJob = scope.launch {
+            var waitedMs = 0
+            while (waitedMs < GRANT_WATCH_TIMEOUT_MS) {
+                delay(GRANT_POLL_MS.toLong())
+                waitedMs += GRANT_POLL_MS
+                if (canWriteSettings()) {
+                    logger.i(TAG, "WRITE_SETTINGS granted — applying timeout and returning to app")
+                    applyTimeout()
+                    returnToApp()
+                    return@launch
+                }
+            }
+            logger.w(TAG, "WRITE_SETTINGS not granted within ${GRANT_WATCH_TIMEOUT_MS / 1000}s — stopped watching")
+        }
+    }
+
+    private fun returnToApp() {
+        try {
+            val intent = Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            logger.w(TAG, "Couldn't bring Hyperborea to the foreground after grant: ${e.message}")
+        }
+    }
 
     private fun applyTimeout() {
         val enabled = userPreferences.screenSleepEnabled.value
@@ -129,5 +180,8 @@ class ScreenSleepController @Inject constructor(
         const val MS_PER_MINUTE = 60_000
         // Android's platform default (2 min) — only used if the system value can't be read.
         const val DEFAULT_TIMEOUT_MS = 120_000
+        // Grant-watch: poll cadence and how long to keep watching after sending the user to Settings.
+        const val GRANT_POLL_MS = 500
+        const val GRANT_WATCH_TIMEOUT_MS = 120_000
     }
 }

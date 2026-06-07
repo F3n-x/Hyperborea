@@ -26,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nettarion.hyperborea.ui.theme.LocalHyperboreaColors
 
@@ -45,10 +47,12 @@ fun DisplaySettingsContent(
     val screenSleepEnabled by viewModel.screenSleepEnabled.collectAsStateWithLifecycle()
     val screenSleepMinutes by viewModel.screenSleepTimeoutMinutes.collectAsStateWithLifecycle()
 
-    // Re-read the WRITE_SETTINGS grant after the user returns from the special-access screen.
-    // The launcher result carries no payload (the system screen reports nothing), so we bump a
-    // tick to recompute canWriteSettings() and re-apply the timeout if it was just granted.
+    // Re-read the WRITE_SETTINGS grant whenever this screen resumes — covers both the user
+    // returning by hand and the controller auto-bringing the app back after the grant (in which
+    // case the launcher result never fires because the existing Activity is just reordered to
+    // front). Bumping the tick recomputes canWriteSettings().
     var permissionTick by remember { mutableIntStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { permissionTick++ }
     val canWriteSettings = remember(permissionTick) { viewModel.canWriteSettings() }
     val writeSettingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -57,7 +61,12 @@ fun DisplaySettingsContent(
         viewModel.reapplyScreenSleep()
     }
     fun requestWriteSettings() {
-        viewModel.writeSettingsIntent()?.let { writeSettingsLauncher.launch(it) }
+        viewModel.writeSettingsIntent()?.let { intent ->
+            // Start watching for the grant first, so the app pulls itself back to the foreground
+            // once permission lands — these kiosks have no nav bar for the user to return on.
+            viewModel.beginAwaitWriteSettingsGrant()
+            writeSettingsLauncher.launch(intent)
+        }
     }
 
     Text(
