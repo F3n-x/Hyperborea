@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+
+## [1.2.14] - 2026-06-12
+- **Consoles whose equipment controller doesn't declare itself as a HID device now connect (e.g. "iFIT-LargeX" boards).** Connecting failed with "No HID interface found on USB device": this controller exposes the same 64-byte data link as every other FitPro board but marks its USB interface as vendor-specific instead of HID. The app now falls back to a vendor-specific interface with the expected IN/OUT endpoint pair when no HID interface is present.
+- **USB descriptors are now part of diagnostics.** The boot log and the support upload include each USB device's interface classes and endpoint layout, and a failed connect now lists what the device actually exposes — so the next unfamiliar board can be diagnosed from a standard log export.
+- **Prerequisite errors now say what's wrong and what to do.** When the app refuses to start broadcasting because iFit is still active (e.g. `'eru-usb-receiver-disabled'`), the message now explains that iFit's ERU is still enabled and that the deploy script needs to be re-run, instead of just naming an internal prerequisite id.
+- **Release builds are no longer minified/obfuscated.** This is an open-source project; obfuscation bought nothing and made support diagnostics unreadable (adapter states showed up as minified class names like `x2`).
+- **Error logs now always include the cause.** Failures like "Update check failed" or "Support upload failed" logged no reason in the captured system log when the device was simply offline (Android suppresses the stack trace for that error class); the exception summary is now part of the log line itself.
+- **Less log noise:** the root/SELinux probes are no longer repeated on every connectivity change (they spawned a `su` process and tripped SELinux audit warnings each time), and the system back-navigation warning on newer Android versions is resolved.
+- **Deploy script reliability (`deploy.sh`).** It no longer skips disabling an iFit package on a stale/failed "already hidden" reading (that could silently leave ERU live, which re-enables the other iFit apps and disables ADB on every boot); it always attempts the disable, and after the reboot it re-verifies that iFit actually stayed disabled and warns loudly if anything came back. It also sets `persist.adb.tcp.port` before rebooting so ADB-over-WiFi reconnects on its own, and the reboot-timeout message now explains the common cause (firmware disabling USB debugging on boot) and how to recover.
 - **Fixed: granting the Screen Sleep permission could strand you in system Settings.** Enabling Screen Sleep (added in 1.2.13) sends you to Android's "modify system settings" screen to grant permission — but on a console with no on-screen navigation bar there was no way back to Hyperborea afterwards. The app now watches for the grant and brings itself back to the foreground automatically the moment you've granted it, and re-checks the permission whenever the settings screen reopens.
 
 ## [1.2.13] - 2026-06-06
