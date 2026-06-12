@@ -40,6 +40,7 @@ fun DeviceSettingsContent(
 ) {
     val colors = LocalHyperboreaColors.current
     val identity by adminViewModel.deviceIdentity.collectAsStateWithLifecycle()
+    val deviceInfo by adminViewModel.deviceInfo.collectAsStateWithLifecycle()
     val calibrationState by adminViewModel.calibrationState.collectAsStateWithLifecycle()
     val fanMode by adminViewModel.fanMode.collectAsStateWithLifecycle()
     var showCalibrateDialog by remember { mutableStateOf(false) }
@@ -123,8 +124,9 @@ fun DeviceSettingsContent(
                 )
             }
             OutlinedButton(onClick = {
-                val modelNumber = identity?.model?.toIntOrNull()
-                onConfigureDevice(modelNumber)
+                // configKey covers model-less consoles via the synthetic product-id key; the
+                // identity model is only a fallback for when no device info has resolved yet.
+                onConfigureDevice(deviceInfo?.configKey ?: identity?.model?.toIntOrNull())
             }) {
                 Text("Configure")
             }

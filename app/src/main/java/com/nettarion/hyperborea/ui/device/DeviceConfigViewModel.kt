@@ -68,18 +68,20 @@ class DeviceConfigViewModel @Inject constructor(
     private val _isCustom = MutableStateFlow(false)
     val isCustom: StateFlow<Boolean> = _isCustom.asStateFlow()
 
-    private var currentModelNumber: Int? = null
+    private var currentConfigKey: Int? = null
 
-    fun load(modelNumber: Int?) {
-        currentModelNumber = modelNumber
-        if (modelNumber == null) {
-            populateFrom(DeviceInfo.DEFAULT_INDOOR_BIKE)
-            return
-        }
+    fun load(configKey: Int?) {
+        currentConfigKey = configKey
         viewModelScope.launch {
-            val custom = deviceConfigRepository.getConfig(modelNumber)
+            val custom = configKey?.let { deviceConfigRepository.getConfig(it) }
             _isCustom.value = custom != null
-            val info = custom ?: DeviceDatabase.fromModel(modelNumber)
+            // Defaults preference: the user's saved config, else the live adapter info (carries
+            // the session-detected type and MCU-reported bounds — model-less consoles have no
+            // catalog entry to fall back to), else the catalog for a real model number.
+            val info = custom
+                ?: hardwareAdapter.deviceInfo.value
+                ?: configKey?.takeIf { it > 0 }?.let { DeviceDatabase.fromModel(it) }
+                ?: DeviceInfo.DEFAULT_INDOOR_BIKE
             populateFrom(info)
         }
     }
@@ -125,7 +127,13 @@ class DeviceConfigViewModel @Inject constructor(
     fun setMaxSpeed(value: String) { _maxSpeed.value = value }
 
     fun save(onSaved: () -> Unit) {
-        val model = currentModelNumber ?: return
+        val key = currentConfigKey
+        if (key == null) {
+            // No equipment has been identified yet, so there's nothing stable to attach the
+            // config to. Surfacing this beats silently dropping the user's edits.
+            logger.w(TAG, "No device config key (equipment never connected) — config not saved")
+            return
+        }
         val info = DeviceInfo(
             name = _name.value,
             type = _type.value,
@@ -143,23 +151,26 @@ class DeviceConfigViewModel @Inject constructor(
             maxSpeed = _maxSpeed.value.toFloatOrNull() ?: 0f,
         )
         viewModelScope.launch {
-            deviceConfigRepository.saveConfig(model, info)
+            deviceConfigRepository.saveConfig(key, info)
             hardwareAdapter.refreshDeviceInfo()
             _isCustom.value = true
-            logger.i(TAG, "Saved config for model $model")
+            logger.i(TAG, "Saved config for key $key")
             onSaved()
         }
     }
 
     fun resetToDefaults() {
-        val model = currentModelNumber ?: return
+        val key = currentConfigKey ?: return
         viewModelScope.launch {
-            deviceConfigRepository.deleteConfig(model)
-            val defaults = DeviceDatabase.fromModel(model)
-            populateFrom(defaults)
+            deviceConfigRepository.deleteConfig(key)
+            // Re-resolve first so the adapter (and our fallback below) reflect the deletion.
             hardwareAdapter.refreshDeviceInfo()
+            val defaults = hardwareAdapter.deviceInfo.value
+                ?: key.takeIf { it > 0 }?.let { DeviceDatabase.fromModel(it) }
+                ?: DeviceInfo.DEFAULT_INDOOR_BIKE
+            populateFrom(defaults)
             _isCustom.value = false
-            logger.i(TAG, "Reset config for model $model to defaults")
+            logger.i(TAG, "Reset config for key $key to defaults")
         }
     }
 

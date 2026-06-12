@@ -15,6 +15,13 @@ data class DeviceInfo(
     val inclineStep: Float,
     val speedStep: Float,
     val maxSpeed: Float,
+    /**
+     * Stable key under which a user's custom config for this equipment is stored: the
+     * MCU-reported model number when there is one, else a synthetic negative key derived from
+     * the USB product id (model-less consoles) — never collides with real (positive) model
+     * numbers. Null only when no equipment has been identified yet.
+     */
+    val configKey: Int? = null,
 ) {
     companion object {
         val DEFAULT_INDOOR_BIKE = DeviceInfo(

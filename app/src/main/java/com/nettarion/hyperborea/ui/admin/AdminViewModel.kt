@@ -12,6 +12,7 @@ import com.nettarion.hyperborea.core.adapter.BroadcastId
 import com.nettarion.hyperborea.core.model.ClientInfo
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
+import com.nettarion.hyperborea.core.model.DeviceInfo
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.model.FanMode
 import com.nettarion.hyperborea.core.adapter.HardwareAdapter
@@ -81,6 +82,7 @@ class AdminViewModel @Inject constructor(
     val systemLogEntries: StateFlow<List<SystemLogEntry>> = systemLogStore.entries
     val systemSnapshot: StateFlow<SystemSnapshot> = systemMonitor.snapshot
     val deviceIdentity: StateFlow<DeviceIdentity?> = hardwareAdapter.deviceIdentity
+    val deviceInfo: StateFlow<DeviceInfo?> = hardwareAdapter.deviceInfo
     val exerciseData: StateFlow<ExerciseData?> = hardwareAdapter.exerciseData
     val appTrackState: StateFlow<TrackState> = updateManager.appTrack.state
     val checking: StateFlow<Boolean> = updateManager.checking

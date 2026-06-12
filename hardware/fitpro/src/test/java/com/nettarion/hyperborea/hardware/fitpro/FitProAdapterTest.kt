@@ -194,10 +194,38 @@ class FitProAdapterTest {
         adapter.connect()
         advanceUntilIdle()
 
-        // V2 identity has null model → fallback
+        // V2 identity has null model → fallback, keyed by the synthetic product-id config key
         assertThat(adapter.deviceInfo.value).isNotNull()
         assertThat(adapter.deviceInfo.value!!.name).isEqualTo("FitPro Device")
         assertThat(adapter.deviceInfo.value!!.type).isEqualTo(DeviceType.BIKE)
+        assertThat(adapter.deviceInfo.value!!.configKey).isEqualTo(-3)
+    }
+
+    @Test
+    fun `V2 custom config saved under the synthetic product key is applied on connect`() = runTest {
+        // Model-less console: the config screen saves under -productId; connect must apply it —
+        // including the user's chosen type winning over session detection.
+        val customInfo = DeviceInfo(
+            name = "My Treadmill",
+            type = DeviceType.TREADMILL,
+            supportedMetrics = setOf(Metric.SPEED, Metric.INCLINE),
+            maxResistance = 0, minResistance = 0,
+            minIncline = 0f, maxIncline = 12f,
+            maxPower = 1200, minPower = 0, powerStep = 1,
+            resistanceStep = 1.0f, inclineStep = 0.5f,
+            speedStep = 0.5f, maxSpeed = 20f,
+        )
+        fakeDeviceConfigRepo.configs[-3] = customInfo
+
+        val adapter = createAdapter(this, productId = 3)
+        adapter.connect()
+        advanceUntilIdle()
+
+        assertThat(adapter.deviceInfo.value).isNotNull()
+        assertThat(adapter.deviceInfo.value!!.name).isEqualTo("My Treadmill")
+        assertThat(adapter.deviceInfo.value!!.type).isEqualTo(DeviceType.TREADMILL)
+        assertThat(adapter.deviceInfo.value!!.maxSpeed).isEqualTo(20f)
+        assertThat(adapter.deviceInfo.value!!.configKey).isEqualTo(-3)
     }
 
     // --- State transitions ---

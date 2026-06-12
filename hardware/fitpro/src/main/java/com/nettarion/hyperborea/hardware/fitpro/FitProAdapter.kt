@@ -6,6 +6,7 @@ import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceIdentity
 import com.nettarion.hyperborea.core.model.DeviceInfo
+import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.orchestration.FulfillResult
 import com.nettarion.hyperborea.core.adapter.HardwareAdapter
@@ -90,6 +91,12 @@ class FitProAdapter @Inject constructor(
 
     private var session: FitProSession? = null
     private var initialElapsedSeconds: Long = 0L
+
+    /** Last USB product id seen — feeds the synthetic [DeviceInfo.configKey] for model-less consoles. */
+    private var lastProductId: Int? = null
+
+    /** Equipment type the V2 session derived from the console's feature set, if any. */
+    private var lastDetectedType: DeviceType? = null
     private var dataForwardJob: Job? = null
     private var identityForwardJob: Job? = null
     private var keyForwardJob: Job? = null
@@ -104,6 +111,7 @@ class FitProAdapter @Inject constructor(
             val result = transportFactory.create(FITPRO_VENDOR_ID, FITPRO_PRODUCT_ID_V1)
             val transport = result.transport
             val productId = result.productId
+            lastProductId = productId
 
             val info = DeviceDatabase.fromProductId(productId)
             if (info == null) {
@@ -153,17 +161,21 @@ class FitProAdapter @Inject constructor(
             // confirmed the session is streaming.
             _state.value = AdapterState.Active
 
+            // Capture the V2 session's feature-derived equipment type BEFORE resolving DeviceInfo —
+            // resolveDeviceInfo() overlays it (unless a user's custom config wins outright).
+            if (newSession is V2Session) {
+                lastDetectedType = newSession.detectedDeviceType
+                logger.i(TAG, "Detected device type: ${newSession.detectedDeviceType}")
+            }
+
             // Capture identity / health available from start() (the forwarding coroutines below may not have run yet)
             updateIdentity(newSession.deviceIdentity.value)
             _degradedReason.value = newSession.degradedReason.value
 
             // Merge MCU-reported capabilities into DeviceInfo. V1 reports detailed equipment
-            // bounds (min/max grade, speed, resistance) on top of the device type; V2 only refines
-            // the type (the bounds come from the model/partNumber catalog lookup later).
-            when (newSession) {
-                is V1Session -> mergeCapabilities(newSession)
-                is V2Session -> applyDetectedDeviceType(newSession.detectedDeviceType)
-            }
+            // bounds (min/max grade, speed, resistance) on top of the device type; V2's type
+            // refinement is handled inside resolveDeviceInfo() via lastDetectedType.
+            if (newSession is V1Session) mergeCapabilities(newSession)
 
             // Forward exercise data from session
             dataForwardJob = scope.launch {
@@ -243,6 +255,7 @@ class FitProAdapter @Inject constructor(
             val result = transportFactory.create(FITPRO_VENDOR_ID, FITPRO_PRODUCT_ID_V1)
             val transport = result.transport
             val productId = result.productId
+            lastProductId = productId
 
             val baseInfo = DeviceDatabase.fromProductId(productId) ?: return null
 
@@ -279,6 +292,7 @@ class FitProAdapter @Inject constructor(
 
         session?.stop()
         session = null
+        lastDetectedType = null
 
         _exerciseData.value = null
         _deviceIdentity.value = null
@@ -304,15 +318,23 @@ class FitProAdapter @Inject constructor(
     }
 
     private suspend fun resolveDeviceInfo(identity: DeviceIdentity): DeviceInfo {
+        // Config key: the MCU-reported model number when there is one, else a synthetic negative
+        // key from the USB product id — model-less consoles (V2 boards report no identity fields)
+        // otherwise have no stable handle for custom configs, which made the config screen show a
+        // default bike and silently drop every save.
         val modelNumber = identity.model?.toIntOrNull()
-        val partNum = identity.partNumber?.toIntOrNull()
-        if (modelNumber != null) {
-            val custom = deviceConfigRepository.getConfig(modelNumber)
-            if (custom != null) return custom
+        val configKey = modelNumber ?: lastProductId?.let { -it }
+        if (configKey != null) {
+            val custom = deviceConfigRepository.getConfig(configKey)
+            // The user's saved config wins outright — including over the session-detected type.
+            if (custom != null) return custom.copy(configKey = configKey)
         }
-        return if (modelNumber != null || partNum != null)
+        val partNum = identity.partNumber?.toIntOrNull()
+        val base = if (modelNumber != null || partNum != null)
             DeviceDatabase.fromHandshake(modelNumber ?: 0, partNum ?: 0)
         else DeviceDatabase.fallback()
+        val typed = lastDetectedType?.let { applyTypeDefaults(base, it) } ?: base
+        return typed.copy(configKey = configKey)
     }
 
     override suspend fun refreshDeviceInfo() {
@@ -378,19 +400,17 @@ class FitProAdapter @Inject constructor(
 
     /**
      * V2 has no MCU-reported equipment bounds (those come from the model/partNumber catalog
-     * lookup in [updateIdentity]), so we only need to overlay the session-detected type and the
-     * matching type-default metric set / minResistance onto the existing [_deviceInfo].
+     * lookup), so refining for the session-detected type only means overlaying the type and its
+     * default metric set / minResistance onto the catalog/fallback base.
      */
-    private fun applyDetectedDeviceType(type: com.nettarion.hyperborea.core.model.DeviceType) {
-        val current = _deviceInfo.value ?: return
-        if (current.type == type) return
+    private fun applyTypeDefaults(base: DeviceInfo, type: DeviceType): DeviceInfo {
+        if (base.type == type) return base
         val typeDefaults = DeviceDatabase.defaultsForType(type)
-        _deviceInfo.value = current.copy(
+        return base.copy(
             type = type,
             supportedMetrics = typeDefaults.supportedMetrics,
             minResistance = typeDefaults.minResistance,
         )
-        logger.i(TAG, "Detected device type: $type — updated DeviceInfo")
     }
 
     override fun setInitialElapsedTime(seconds: Long) {
