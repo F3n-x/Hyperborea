@@ -111,7 +111,13 @@ class UsbHidTransport(
                 }
                 attempts++
                 if (attempts >= WRITE_MAX_ATTEMPTS) {
-                    throw IllegalStateException("USB write failed after $attempts attempts")
+                    // A controller that refuses an entire retry budget is in a state no software
+                    // can clear (its own console software shows a "restart your equipment" screen
+                    // for this); the message is user-facing via the error overlay.
+                    throw IllegalStateException(
+                        "The equipment isn't accepting commands (USB write failed after $attempts attempts). " +
+                            "Turn the equipment off at its power switch, wait 30 seconds, then turn it back on and try again.",
+                    )
                 }
                 if (attempts == 1 || attempts % 10 == 0) {
                     logger.w(TAG, "USB write refused, retrying (attempt $attempts/$WRITE_MAX_ATTEMPTS)")

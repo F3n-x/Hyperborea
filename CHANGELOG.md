@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- **A dead equipment link now tells the user what to actually do.** When the controller refuses the entire write retry budget, the error shown is no longer "USB write failed after 50 attempts" but an instruction to power the equipment off and on at its switch — the controller is separately powered, keeps its wedged state across tablet reboots, and no software (including the equipment's own console software, which shows a "restart your equipment" screen in this state) can clear it over USB.
 - **Stalled-endpoint recovery probe.** A field log on 1.2.15 showed the equipment controller refusing every write *instantly* even right after the tablet rebooted — the signature of a halted/stalled USB endpoint (the controller is separately powered, so a tablet reboot doesn't reset it). On the first refused write the app now issues the standard endpoint clear-halt request and logs the outcome, which both recovers a stale halt and tells support exports whether the controller is actively rejecting writes or mute entirely.
 - **The equipment controller's USB serial is now logged at connect time** (the boot diagnostic runs before USB permission is granted and can't read it). Whether the controller reports a serial decides whether Android can remember the "Always open Hyperborea" choice — this pins down the recurring permission dialog.
 
