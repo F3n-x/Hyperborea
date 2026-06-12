@@ -153,6 +153,32 @@ class V2CodecTest {
     }
 
     @Test
+    fun `encode QueryProductInfo is an extended command with the product-info class`() {
+        val encoded = V2Codec.encode(V2Message.Outgoing.QueryProductInfo())
+        assertThat(encoded[0]).isEqualTo(0x02)
+        assertThat(encoded[1].toInt() and 0x0F).isEqualTo(0x0E)
+        assertThat(encoded[2]).isEqualTo(1) // payload length
+        assertThat(encoded[3]).isEqualTo(0x02) // product-info class
+    }
+
+    @Test
+    fun `decode product-info field carries tag and text`() {
+        // type=EXTENDED(0x0E), payload = [class=2, field=5(serial), "AB12"]
+        val packet = byteArrayOf(0x02, 0x2E, 0x06, 0x02, 0x05, 0x41, 0x42, 0x31, 0x32)
+        val decoded = V2Codec.decode(packet) as V2Message.Incoming.ProductInfoField
+        assertThat(decoded.fieldType).isEqualTo(V2Codec.PRODUCT_INFO_SERIAL_NUMBER)
+        assertThat(decoded.text).isEqualTo("AB12")
+        assertThat(decoded.isEndOfList).isFalse()
+    }
+
+    @Test
+    fun `decode product-info end-of-list field`() {
+        val packet = byteArrayOf(0x02, 0x2E, 0x02, 0x02, 0x00)
+        val decoded = V2Codec.decode(packet) as V2Message.Incoming.ProductInfoField
+        assertThat(decoded.isEndOfList).isTrue()
+    }
+
+    @Test
     fun `decode returns null for too-short packet`() {
         assertThat(V2Codec.decode(byteArrayOf(0x02, 0x23))).isNull()
     }

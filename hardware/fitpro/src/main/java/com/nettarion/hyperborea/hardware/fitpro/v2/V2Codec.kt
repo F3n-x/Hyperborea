@@ -12,12 +12,26 @@ object V2Codec {
     private const val CMD_WRITE: Int = 0x02
     private const val CMD_SUPPORTED_FEATURES: Int = 0x06
     private const val CMD_UNSUBSCRIBE: Int = 0x07
+    private const val CMD_EXTENDED: Int = 0x0E
 
     // Incoming response types (V2ResponseType) — different numbering from commands
     private const val RSP_FEATURES: Int = 0x01
     private const val RSP_ACKNOWLEDGE: Int = 0x03
     private const val RSP_ERROR: Int = 0x04
     private const val RSP_EVENT: Int = 0x05
+    private const val RSP_EXTENDED: Int = 0x0E
+
+    // Extended-command info classes; product info is the only one we use.
+    private const val EXT_PRODUCT_INFO: Int = 0x02
+
+    // Product-info field tags (0 terminates the stream).
+    const val PRODUCT_INFO_END: Int = 0
+    const val PRODUCT_INFO_SW_VERSION: Int = 1
+    const val PRODUCT_INFO_SW_PART_NUMBER: Int = 2
+    const val PRODUCT_INFO_HW_PART_NUMBER: Int = 3
+    const val PRODUCT_INFO_MODEL_NAME: Int = 4
+    const val PRODUCT_INFO_SERIAL_NUMBER: Int = 5
+    const val PRODUCT_INFO_MOTOR_CONTROLLER_VERSION: Int = 9
 
     fun encode(message: V2Message.Outgoing): ByteArray = when (message) {
         is V2Message.Outgoing.QueryFeatures -> encodePacket(
@@ -39,6 +53,11 @@ object V2Codec {
             source = message.source,
             type = CMD_WRITE,
             payload = encodeFeatureValue(message.feature, message.value),
+        )
+        is V2Message.Outgoing.QueryProductInfo -> encodePacket(
+            source = message.source,
+            type = CMD_EXTENDED,
+            payload = byteArrayOf(EXT_PRODUCT_INFO.toByte()),
         )
     }
 
@@ -67,8 +86,19 @@ object V2Codec {
                 } else null,
             )
             RSP_EVENT -> decodeEvent(payload)
+            RSP_EXTENDED -> decodeExtended(payload, data)
             else -> V2Message.Incoming.Unknown(data.copyOf())
         }
+    }
+
+    /** Extended payload: [infoClass, fieldTag, UTF-8 text…]. Only product info is modelled. */
+    private fun decodeExtended(payload: ByteArray, raw: ByteArray): V2Message.Incoming {
+        if (payload.size < 2 || (payload[0].toInt() and 0xFF) != EXT_PRODUCT_INFO) {
+            return V2Message.Incoming.Unknown(raw.copyOf())
+        }
+        val fieldType = payload[1].toInt() and 0xFF
+        val text = if (payload.size > 2) String(payload, 2, payload.size - 2, Charsets.UTF_8) else ""
+        return V2Message.Incoming.ProductInfoField(fieldType, text)
     }
 
     private fun encodePacket(source: Int, type: Int, payload: ByteArray): ByteArray {

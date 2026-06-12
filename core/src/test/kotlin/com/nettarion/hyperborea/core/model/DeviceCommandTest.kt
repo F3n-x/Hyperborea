@@ -18,6 +18,7 @@ class DeviceCommandTest {
             DeviceCommand.ResumeWorkout,
             DeviceCommand.CalibrateIncline,
             DeviceCommand.SetFanSpeed(level = 2),
+            DeviceCommand.SetUserWeight(kg = 82.5f),
             DeviceCommand.SetVolume(level = 5),
             DeviceCommand.SetGear(gear = 3),
             DeviceCommand.SetDistanceGoal(meters = 5000),
@@ -40,6 +41,7 @@ class DeviceCommandTest {
                 DeviceCommand.ResumeWorkout -> "resume"
                 DeviceCommand.CalibrateIncline -> "calibrateIncline"
                 is DeviceCommand.SetFanSpeed -> "fanSpeed:${cmd.level}"
+                is DeviceCommand.SetUserWeight -> "userWeight:${cmd.kg}"
                 is DeviceCommand.SetVolume -> "volume:${cmd.level}"
                 is DeviceCommand.SetGear -> "gear:${cmd.gear}"
                 is DeviceCommand.SetDistanceGoal -> "distanceGoal:${cmd.meters}"
@@ -54,7 +56,7 @@ class DeviceCommandTest {
         assertThat(results).containsExactly(
             "resistance:5", "incline:2.0", "speed:25.0", "power:200",
             "adjustIncline:true", "adjustSpeed:false", "pause", "resume",
-            "calibrateIncline", "fanSpeed:2",
+            "calibrateIncline", "fanSpeed:2", "userWeight:82.5",
             "volume:5", "gear:3", "distanceGoal:5000",
             "warmupTimeout:300", "cooldownTimeout:180", "pauseTimeout:60",
             "warmUpMode:true", "coolDownMode:true", "ergMode:true",

@@ -11,6 +11,7 @@ import com.nettarion.hyperborea.core.model.DeviceInfo
 import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.model.ExerciseData
 import com.nettarion.hyperborea.core.model.FanMode
+import com.nettarion.hyperborea.core.profile.ProfileRepository
 import com.nettarion.hyperborea.core.profile.RideRecorder
 import com.nettarion.hyperborea.core.profile.UserPreferences
 import com.nettarion.hyperborea.core.system.SystemController
@@ -51,6 +52,7 @@ class Orchestrator(
     private val logger: AppLogger,
     private val scope: CoroutineScope,
     private val sensorAdapter: SensorAdapter? = null,
+    private val profileRepository: ProfileRepository? = null,
 ) {
 
     private val _state = MutableStateFlow<OrchestratorState>(OrchestratorState.Idle)
@@ -247,6 +249,15 @@ class Orchestrator(
         }
         broadcastManager.connectDataSource(exerciseData)
         broadcastManager.updateDeviceInfo(deviceInfo)
+
+        // Tell the console the rider's weight so its own calorie estimation has something to
+        // work with. Best-effort: not all consoles take it, and a profile may not have one.
+        profileRepository?.activeProfile?.value?.weightKg?.let { kg ->
+            try {
+                hardwareAdapter.sendCommand(DeviceCommand.SetUserWeight(kg))
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { logger.w(TAG, "Couldn't send rider weight: ${e.message}") }
+        }
 
         // Command pipeline: broadcasts → hardware
         commandPipelineJob = scope.launch {

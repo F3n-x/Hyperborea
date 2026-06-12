@@ -327,6 +327,8 @@ class V1Session(
             mapOf(V1DataField.WORKOUT_MODE to WorkoutMode.RUNNING.raw)
         }
         is DeviceCommand.CalibrateIncline -> emptyMap()
+        // No rider-weight field in the V1 field set we poll — quietly ignored.
+        is DeviceCommand.SetUserWeight -> emptyMap()
         is DeviceCommand.SetFanSpeed -> mapOf(V1DataField.FAN_STATE to command.level.toFloat())
         is DeviceCommand.SetVolume -> mapOf(V1DataField.VOLUME to command.level.toFloat())
         is DeviceCommand.SetGear -> mapOf(V1DataField.GEAR to command.gear.toFloat())

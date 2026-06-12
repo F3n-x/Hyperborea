@@ -18,8 +18,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,8 +48,9 @@ class V2Session(
     private val _sessionState = MutableStateFlow<SessionState>(SessionState.Disconnected)
     override val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
 
-    // The V2 protocol has no console-keypad field — this never emits.
-    override val consoleKeyPresses: SharedFlow<ConsoleKey> = MutableSharedFlow()
+    private val _consoleKeyPresses =
+        MutableSharedFlow<ConsoleKey>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val consoleKeyPresses: SharedFlow<ConsoleKey> = _consoleKeyPresses.asSharedFlow()
 
     private val _degradedReason = MutableStateFlow<String?>(null)
     override val degradedReason: StateFlow<String?> = _degradedReason.asStateFlow()
@@ -67,6 +70,15 @@ class V2Session(
 
     /** Raw equipment-type code from the console's [V2FeatureId.DEVICE_TYPE] event; null until reported. */
     private val _reportedDeviceType = MutableStateFlow<Float?>(null)
+
+    /** Product-info fields accumulated from the console's field stream; published on end-of-list. */
+    private val productInfoAccumulator = mutableMapOf<Int, String>()
+    private val _productInfo = MutableStateFlow<Map<Int, String>?>(null)
+
+    /** Set after the handshake; writes to features the console didn't declare are skipped. */
+    private var declaredFeatures: Set<V2FeatureId>? = null
+
+    private var lastKeyCode = 0
 
     /**
      * Equipment type of the connected machine. Resolved during [start], preferring the console's
@@ -99,13 +111,19 @@ class V2Session(
             if (supported == null) {
                 logger.w(TAG, "Console never declared supported features — subscribing unfiltered")
             }
+            declaredFeatures = supported
+
+            // Identity (versions, part number, model name, serial) comes from the product-info
+            // field stream — queried between the features reply and subscribing, the order the
+            // console expects. Optional: a console that doesn't answer still streams data.
+            _deviceIdentity.value = queryProductInfo() ?: DeviceIdentity()
+
             configureSubscriptions(supported)
 
             // Equipment type: the console reports it directly as the DEVICE_TYPE feature's
             // initial event after subscribing; the supported-feature-set heuristic covers
             // consoles that don't implement it. transitionToWorkout() branches on this.
             detectedDeviceType = resolveDeviceType(supported)
-            _deviceIdentity.value = DeviceIdentity()
 
             // Bring the console up to the workout-active state the way the firmware expects.
             transitionToWorkout()
@@ -153,6 +171,10 @@ class V2Session(
         unknownFeatureCodes.clear()
         _supportedFeatures.value = null
         _reportedDeviceType.value = null
+        productInfoAccumulator.clear()
+        _productInfo.value = null
+        declaredFeatures = null
+        lastKeyCode = 0
         _exerciseData.value = null
         _deviceIdentity.value = null
         _degradedReason.value = null
@@ -184,10 +206,9 @@ class V2Session(
         try {
             transport.open()
             startReceiveLoop()
-            // V2 has no identity fields to read; one features query confirms the console is talking.
             val supported = querySupportedFeatures(attempts = 1)
             logger.i(TAG, if (supported != null) "Console replied with ${supported.size} features" else "Console didn't reply to features query")
-            _deviceIdentity.value = DeviceIdentity()
+            _deviceIdentity.value = queryProductInfo() ?: DeviceIdentity()
             return _deviceIdentity.value
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
@@ -198,6 +219,32 @@ class V2Session(
             receiveJob = null
             try { transport.close() } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * Asks for the product-info field stream and builds a [DeviceIdentity] from it. The console
+     * streams tagged string fields and terminates with an end-of-list tag; null if it never
+     * completes the stream (identity is optional — the session works without it).
+     */
+    private suspend fun queryProductInfo(): DeviceIdentity? {
+        transport.write(V2Codec.encode(V2Message.Outgoing.QueryProductInfo()))
+        val fields = withTimeoutOrNull(PRODUCT_INFO_TIMEOUT_MS) {
+            _productInfo.filterNotNull().first()
+        }
+        if (fields == null) {
+            logger.w(TAG, "Console didn't complete the product-info stream within ${PRODUCT_INFO_TIMEOUT_MS}ms")
+            return null
+        }
+        val identity = DeviceIdentity(
+            serialNumber = fields[V2Codec.PRODUCT_INFO_SERIAL_NUMBER]?.ifBlank { null },
+            firmwareVersion = fields[V2Codec.PRODUCT_INFO_SW_VERSION]?.ifBlank { null },
+            hardwareVersion = fields[V2Codec.PRODUCT_INFO_MOTOR_CONTROLLER_VERSION]?.ifBlank { null },
+            model = fields[V2Codec.PRODUCT_INFO_MODEL_NAME]?.ifBlank { null },
+            partNumber = fields[V2Codec.PRODUCT_INFO_HW_PART_NUMBER]?.ifBlank { null },
+        )
+        logger.i(TAG, "Product info: model=${identity.model}, serial=${identity.serialNumber}, " +
+            "fw=${identity.firmwareVersion}, partNumber=${identity.partNumber}")
+        return identity
     }
 
     override suspend fun calibrate() {
@@ -246,10 +293,14 @@ class V2Session(
                 logger.w(TAG, "CalibrateIncline not supported on V2")
                 return
             }
-            is DeviceCommand.SetFanSpeed -> {
-                logger.w(TAG, "SetFanSpeed not supported on V2")
-                return
-            }
+            is DeviceCommand.SetFanSpeed -> V2Message.Outgoing.WriteFeature(
+                V2FeatureId.FAN_STATE,
+                command.level.toFloat(),
+            )
+            is DeviceCommand.SetUserWeight -> V2Message.Outgoing.WriteFeature(
+                V2FeatureId.USER_WEIGHT_KG,
+                command.kg,
+            )
             is DeviceCommand.SetVolume,
             is DeviceCommand.SetGear,
             is DeviceCommand.SetDistanceGoal,
@@ -264,6 +315,15 @@ class V2Session(
             }
         }
 
+        // Never write a feature the console didn't declare — it just replies with an error,
+        // and rejected traffic is what we're eliminating. With no declared set (console never
+        // answered the query) write anyway.
+        val declared = declaredFeatures
+        if (declared != null && message.feature !in declared) {
+            logger.d(TAG, "Skipping ${command::class.simpleName}: ${message.feature} not declared by this console")
+            return
+        }
+
         try {
             transport.write(V2Codec.encode(message))
         } catch (e: CancellationException) {
@@ -271,6 +331,32 @@ class V2Session(
         } catch (e: Exception) {
             logger.e(TAG, "Failed to write feature", e)
         }
+    }
+
+    /**
+     * Console keypad. Same code space as the V1 keypad field; events repeat the current code, so
+     * emit only on changes and ignore the idle/no-key value. Observe-only — the MCU acts on its
+     * own keys; this stream feeds UI, diagnostics, and the orchestrator's key routing.
+     */
+    private fun handleKeyCode(code: Int) {
+        if (code == lastKeyCode) return
+        lastKeyCode = code
+        if (code == 0) return
+        val key = when (code) {
+            KEY_START -> ConsoleKey.START
+            KEY_STOP -> ConsoleKey.STOP
+            KEY_SPEED_UP -> ConsoleKey.SPEED_UP
+            KEY_SPEED_DOWN -> ConsoleKey.SPEED_DOWN
+            KEY_INCLINE_UP -> ConsoleKey.INCLINE_UP
+            KEY_INCLINE_DOWN -> ConsoleKey.INCLINE_DOWN
+            // Gear up/down maps to resistance — on bike consoles the +/- buttons are the
+            // resistance/gear selector and there's no separate "gear" the app tracks.
+            KEY_RESISTANCE_UP, KEY_GEAR_UP -> ConsoleKey.RESISTANCE_UP
+            KEY_RESISTANCE_DOWN, KEY_GEAR_DOWN -> ConsoleKey.RESISTANCE_DOWN
+            else -> null // fan / volume / etc. — not mapped (yet)
+        }
+        logger.d(TAG, "Console keypad: code=$code${key?.let { " ($it)" } ?: ""}")
+        key?.let { _consoleKeyPresses.tryEmit(it) }
     }
 
     /**
@@ -370,6 +456,13 @@ class V2Session(
                         if (message.unknownCodes.isNotEmpty()) " + unknown ${message.unknownCodes}" else "")
                 }
             }
+            is V2Message.Incoming.ProductInfoField -> {
+                if (message.isEndOfList) {
+                    _productInfo.value = productInfoAccumulator.toMap()
+                } else {
+                    productInfoAccumulator[message.fieldType] = message.text
+                }
+            }
             is V2Message.Incoming.Acknowledge ->
                 logger.d(TAG, "ACK: ${message.type}")
             is V2Message.Incoming.Error ->
@@ -382,6 +475,19 @@ class V2Session(
     private fun applyEvent(feature: V2FeatureId, value: Float) {
         when (feature) {
             V2FeatureId.DEVICE_TYPE -> _reportedDeviceType.value = value
+            V2FeatureId.KEY_COOKED -> handleKeyCode(value.toInt())
+            V2FeatureId.REQUEST_DISCONNECT -> if (value != 0f) {
+                // The console wants the link back (e.g. its own maintenance flow). Surface it
+                // loudly; deciding to comply is the orchestrator's call once we see this in the
+                // field and know what triggers it.
+                logger.w(TAG, "Console requested disconnect (value=$value)")
+            }
+            V2FeatureId.TOTAL_IN_USE_SECONDS -> _deviceIdentity.value =
+                (_deviceIdentity.value ?: DeviceIdentity()).copy(equipmentHours = value.toLong())
+            V2FeatureId.TOTAL_MACHINE_DISTANCE -> _deviceIdentity.value =
+                (_deviceIdentity.value ?: DeviceIdentity()).copy(equipmentDistance = value)
+            V2FeatureId.USER_WEIGHT_KG -> { /* echo of our own write — not exercise data */ }
+            V2FeatureId.FAN_STATE -> { /* console fan state — not exercise data */ }
             V2FeatureId.WATTS -> accumulator.updatePower(value.toInt())
             V2FeatureId.RPM -> accumulator.updateCadence(value.toInt())
             V2FeatureId.CURRENT_KPH -> accumulator.updateSpeed(value)
@@ -548,6 +654,20 @@ class V2Session(
         private const val QUERY_FEATURES_ATTEMPTS = 3
         // The DEVICE_TYPE initial event lands right after the subscribe ACKs — a short wait.
         private const val DEVICE_TYPE_TIMEOUT_MS = 2_000L
+        // Product info streams many small frames — same long-command class as the features query.
+        private const val PRODUCT_INFO_TIMEOUT_MS = 4_000L
+
+        // Console keypad codes (same space as the V1 keypad field).
+        private const val KEY_STOP = 1
+        private const val KEY_START = 2
+        private const val KEY_SPEED_UP = 3
+        private const val KEY_SPEED_DOWN = 4
+        private const val KEY_INCLINE_UP = 5
+        private const val KEY_INCLINE_DOWN = 6
+        private const val KEY_RESISTANCE_UP = 7
+        private const val KEY_RESISTANCE_DOWN = 8
+        private const val KEY_GEAR_UP = 9
+        private const val KEY_GEAR_DOWN = 10
 
         // V1 [com.nettarion.hyperborea.hardware.fitpro.v1.WorkoutMode] raw codes used by the
         // orchestrator's workout-mode monitor — kept here as a translation target for V2's WORKOUT_STATE.

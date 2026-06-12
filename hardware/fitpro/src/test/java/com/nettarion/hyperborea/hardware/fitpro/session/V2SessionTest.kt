@@ -1,6 +1,7 @@
 package com.nettarion.hyperborea.hardware.fitpro.session
 
 import com.google.common.truth.Truth.assertThat
+import com.nettarion.hyperborea.core.model.ConsoleKey
 import com.nettarion.hyperborea.core.model.DeviceCommand
 import com.nettarion.hyperborea.core.model.DeviceType
 import com.nettarion.hyperborea.core.test.TestAppLogger
@@ -15,6 +16,7 @@ import java.nio.ByteOrder
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -257,6 +259,100 @@ class V2SessionTest {
         assertThat(subscribedFeatures()).containsExactly(
             V2FeatureId.WORKOUT_STATE, V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WATTS,
         )
+    }
+
+    @Test
+    fun `product info populates the device identity`() = runTest {
+        val session = createSession(this)
+        emitSupportedFeatures(V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WORKOUT_STATE)
+        transport.emitIncoming(buildProductInfoPacket(1, "1.4.2"))   // sw version
+        transport.emitIncoming(buildProductInfoPacket(3, "430934")) // hw part number
+        transport.emitIncoming(buildProductInfoPacket(4, "NTL12345"))
+        transport.emitIncoming(buildProductInfoPacket(5, "SER-99"))
+        transport.emitIncoming(buildProductInfoPacket(0, ""))        // end of list
+
+        session.start()
+        advanceUntilIdle()
+
+        val identity = session.deviceIdentity.value
+        assertThat(identity).isNotNull()
+        assertThat(identity!!.firmwareVersion).isEqualTo("1.4.2")
+        assertThat(identity.partNumber).isEqualTo("430934")
+        assertThat(identity.model).isEqualTo("NTL12345")
+        assertThat(identity.serialNumber).isEqualTo("SER-99")
+    }
+
+    @Test
+    fun `console keypad events emit ConsoleKeys with edge detection`() = runTest {
+        val session = createSession(this)
+        session.start()
+        advanceUntilIdle()
+
+        val keys = mutableListOf<ConsoleKey>()
+        val collectJob = backgroundScope.launch { session.consoleKeyPresses.collect { keys.add(it) } }
+        runCurrent()
+
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 3f)) // speed up
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 3f)) // repeat — ignored
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 0f)) // release
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 3f)) // pressed again
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 1f)) // stop
+        runCurrent()
+
+        assertThat(keys).containsExactly(
+            ConsoleKey.SPEED_UP, ConsoleKey.SPEED_UP, ConsoleKey.STOP,
+        ).inOrder()
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `writes to features the console did not declare are skipped`() = runTest {
+        val session = createSession(this)
+        // Treadmill-ish console: no resistance features declared.
+        emitSupportedFeatures(V2FeatureId.TARGET_KPH, V2FeatureId.WORKOUT_STATE)
+        session.start()
+        advanceUntilIdle()
+
+        val countBefore = transport.writtenPackets.size
+        session.writeFeature(DeviceCommand.SetResistance(10))
+
+        assertThat(transport.writtenPackets.size).isEqualTo(countBefore)
+    }
+
+    @Test
+    fun `SetFanSpeed writes the fan feature when declared`() = runTest {
+        val session = createSession(this)
+        emitSupportedFeatures(V2FeatureId.FAN_STATE, V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WORKOUT_STATE)
+        session.start()
+        advanceUntilIdle()
+
+        val countBefore = transport.writtenPackets.size
+        session.writeFeature(DeviceCommand.SetFanSpeed(3))
+
+        val written = transport.writtenPackets.drop(countBefore)
+        assertThat(written).hasSize(1)
+        assertThat(written[0][3]).isEqualTo(V2FeatureId.FAN_STATE.wireLo)
+    }
+
+    @Test
+    fun `lifetime stats events update the device identity`() = runTest {
+        val session = createSession(this)
+        session.start()
+        advanceUntilIdle()
+
+        transport.emitIncoming(buildEventPacket(V2FeatureId.TOTAL_IN_USE_SECONDS, 7200f))
+        transport.emitIncoming(buildEventPacket(V2FeatureId.TOTAL_MACHINE_DISTANCE, 250_000f))
+        runCurrent()
+
+        assertThat(session.deviceIdentity.value!!.equipmentHours).isEqualTo(7200L)
+        assertThat(session.deviceIdentity.value!!.equipmentDistance).isEqualTo(250_000f)
+    }
+
+    /** Build one product-info field frame: extended response, class=2, then tag + UTF-8 text. */
+    private fun buildProductInfoPacket(fieldType: Int, text: String): ByteArray {
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val payload = byteArrayOf(0x02, fieldType.toByte(), *textBytes)
+        return byteArrayOf(0x02, 0x2E, payload.size.toByte(), *payload)
     }
 
     /** Feature ids carried by all outgoing Subscribe packets (type nibble 0x01). */

@@ -11,6 +11,8 @@ sealed interface DeviceCommand {
     data object ResumeWorkout : DeviceCommand
     data object CalibrateIncline : DeviceCommand
     data class SetFanSpeed(val level: Int) : DeviceCommand
+    /** Rider weight for the console's own calorie estimation. */
+    data class SetUserWeight(val kg: Float) : DeviceCommand
     data class SetVolume(val level: Int) : DeviceCommand
     data class SetGear(val gear: Int) : DeviceCommand
     data class SetDistanceGoal(val meters: Int) : DeviceCommand

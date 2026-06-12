@@ -7,6 +7,9 @@ sealed interface V2Message {
         data class Subscribe(val features: List<V2FeatureId>, val source: Int = SOURCE_APP) : Outgoing
         data class Unsubscribe(val features: List<V2FeatureId>, val source: Int = SOURCE_APP) : Outgoing
         data class WriteFeature(val feature: V2FeatureId, val value: Float, val source: Int = SOURCE_APP) : Outgoing
+
+        /** Asks for the product-info field stream (versions, part number, model name, serial). */
+        data class QueryProductInfo(val source: Int = SOURCE_APP) : Outgoing
     }
 
     sealed interface Incoming : V2Message {
@@ -60,6 +63,14 @@ sealed interface V2Message {
         ) : Incoming {
             val isEndOfList: Boolean get() = features.isEmpty() && unknownCodes.isEmpty()
         }
+        /**
+         * One field of the product-info stream: [fieldType] tags what [text] is (see
+         * [V2Codec] PRODUCT_INFO_* constants); a [fieldType] of 0 terminates the stream.
+         */
+        data class ProductInfoField(val fieldType: Int, val text: String) : Incoming {
+            val isEndOfList: Boolean get() = fieldType == 0
+        }
+
         data class Unknown(val raw: ByteArray) : Incoming {
             override fun equals(other: Any?) = other is Unknown && raw.contentEquals(other.raw)
             override fun hashCode() = raw.contentHashCode()

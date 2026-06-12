@@ -7,6 +7,7 @@ import com.nettarion.hyperborea.core.adapter.SensorAdapter
 import com.nettarion.hyperborea.core.orchestration.BroadcastManager
 import com.nettarion.hyperborea.core.orchestration.EcosystemManager
 import com.nettarion.hyperborea.core.orchestration.Orchestrator
+import com.nettarion.hyperborea.core.profile.ProfileRepository
 import com.nettarion.hyperborea.core.profile.RideRecorder
 import com.nettarion.hyperborea.core.profile.UserPreferences
 import com.nettarion.hyperborea.core.system.SystemController
@@ -47,9 +48,11 @@ object OrchestratorModule {
         logger: AppLogger,
         scope: CoroutineScope,
         sensorAdapter: SensorAdapter,
+        profileRepository: ProfileRepository,
     ): Orchestrator = Orchestrator(
         systemMonitor, systemController, ecosystemManager,
         hardwareAdapter, broadcastManager, rideRecorder, userPreferences, logger, scope,
         sensorAdapter = sensorAdapter,
+        profileRepository = profileRepository,
     )
 }
