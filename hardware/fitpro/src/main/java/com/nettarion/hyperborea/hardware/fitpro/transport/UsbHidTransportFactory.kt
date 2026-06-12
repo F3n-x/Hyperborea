@@ -19,10 +19,19 @@ class UsbHidTransportFactory(
             "No USB device found with vendor=0x${vendorId.toString(16)}, product in $FITPRO_PRODUCT_IDS"
         )
 
-        val usbInterface = (0 until device.interfaceCount)
-            .map { device.getInterface(it) }
-            .firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_HID }
-            ?: throw IllegalStateException("No HID interface found on USB device")
+        val interfaces = (0 until device.interfaceCount).map { device.getInterface(it) }
+
+        // Prefer the HID interface. Some boards (e.g. the "iFIT-LargeX", pid 3) expose the
+        // same 64-byte interrupt IN/OUT endpoint pair but declare the interface as
+        // vendor-specific instead of HID.
+        val usbInterface = interfaces.firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_HID }
+            ?: interfaces.firstOrNull {
+                it.interfaceClass == UsbConstants.USB_CLASS_VENDOR_SPEC && it.hasInAndOutEndpoints()
+            }
+            ?: throw IllegalStateException(
+                "No HID or vendor-specific data interface on USB device; " +
+                    "interfaces: ${interfaces.joinToString { it.describe() }}"
+            )
 
         var inEndpoint: android.hardware.usb.UsbEndpoint? = null
         var outEndpoint: android.hardware.usb.UsbEndpoint? = null
@@ -36,17 +45,41 @@ class UsbHidTransportFactory(
             }
         }
 
-        requireNotNull(inEndpoint) { "No IN endpoint found on HID interface" }
-        requireNotNull(outEndpoint) { "No OUT endpoint found on HID interface" }
+        requireNotNull(inEndpoint) { "No IN endpoint found on ${usbInterface.describe()}" }
+        requireNotNull(outEndpoint) { "No OUT endpoint found on ${usbInterface.describe()}" }
 
         logger.i(TAG, "Found device vendor=0x${device.vendorId.toString(16)}, product=${device.productId}")
-        logger.d(TAG, "HID interface=${usbInterface.id}, IN=${inEndpoint.address}, OUT=${outEndpoint.address}")
+        logger.i(TAG, "Using ${usbInterface.describe()}, IN=0x${inEndpoint.address.toString(16)}, OUT=0x${outEndpoint.address.toString(16)}")
 
         val connection = usbManager.openDevice(device)
             ?: throw IllegalStateException("Failed to open USB device (permission denied?)")
 
         val transport = UsbHidTransport(connection, usbInterface, inEndpoint, outEndpoint, logger)
         return HidTransportResult(transport, device.productId)
+    }
+
+    private fun android.hardware.usb.UsbInterface.hasInAndOutEndpoints(): Boolean {
+        val endpoints = (0 until endpointCount).map { getEndpoint(it) }
+        return endpoints.any { it.direction == UsbConstants.USB_DIR_IN } &&
+            endpoints.any { it.direction == UsbConstants.USB_DIR_OUT }
+    }
+
+    private fun android.hardware.usb.UsbInterface.describe(): String {
+        val eps = (0 until endpointCount).joinToString(", ") { i ->
+            val ep = getEndpoint(i)
+            val dir = if (ep.direction == UsbConstants.USB_DIR_IN) "in" else "out"
+            val type = when (ep.type) {
+                UsbConstants.USB_ENDPOINT_XFER_CONTROL -> "ctrl"
+                UsbConstants.USB_ENDPOINT_XFER_ISOC -> "iso"
+                UsbConstants.USB_ENDPOINT_XFER_BULK -> "bulk"
+                UsbConstants.USB_ENDPOINT_XFER_INT -> "int"
+                else -> "type${ep.type}"
+            }
+            "0x%02x/%s/%s/%d".format(ep.address, dir, type, ep.maxPacketSize)
+        }
+        return "if=%d cls=%02x/%02x/%02x eps=[%s]".format(
+            id, interfaceClass, interfaceSubclass, interfaceProtocol, eps,
+        )
     }
 
     companion object {
