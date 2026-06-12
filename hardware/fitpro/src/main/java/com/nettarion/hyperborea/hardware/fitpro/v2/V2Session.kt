@@ -65,11 +65,15 @@ class V2Session(
     private val featureAccumulator = mutableSetOf<V2FeatureId>()
     private val unknownFeatureCodes = mutableSetOf<Int>()
 
+    /** Raw equipment-type code from the console's [V2FeatureId.DEVICE_TYPE] event; null until reported. */
+    private val _reportedDeviceType = MutableStateFlow<Float?>(null)
+
     /**
-     * Equipment type derived from the supported-features set after the QueryFeatures handshake. The
-     * V2 protocol has no explicit equipment-id field (V1's [DEVICE_TREADMILL]/[DEVICE_FITNESS_BIKE]
-     * branch is absent), so we infer it: a belt-driven machine reports speed/grade features but no
-     * flywheel-resistance features. Defaults to [DeviceType.BIKE] before [awaitDeviceType] resolves.
+     * Equipment type of the connected machine. Resolved during [start], preferring the console's
+     * own [V2FeatureId.DEVICE_TYPE] report (pushed as an initial event after subscribing); when
+     * the console doesn't implement that feature we fall back to inferring from the supported
+     * feature set — a belt-driven machine reports speed/grade features but no flywheel-resistance
+     * features. Defaults to [DeviceType.BIKE] until resolved.
      */
     override var detectedDeviceType: DeviceType = DeviceType.BIKE
         private set
@@ -90,16 +94,17 @@ class V2Session(
             startReceiveLoop()   // must run before the query so the reply isn't raced
 
             // The console must declare its supported features before we subscribe — it rejects
-            // subscriptions to features it doesn't implement. The feature set also tells us the
-            // equipment type; transitionToWorkout() branches on this.
+            // subscriptions to features it doesn't implement.
             val supported = querySupportedFeatures(QUERY_FEATURES_ATTEMPTS)
-            if (supported != null) {
-                detectedDeviceType = deriveDeviceType(supported)
-                logger.i(TAG, "Detected device type: $detectedDeviceType (from ${supported.size} features)")
-            } else {
-                logger.w(TAG, "Console never declared supported features — assuming $detectedDeviceType, subscribing unfiltered")
+            if (supported == null) {
+                logger.w(TAG, "Console never declared supported features — subscribing unfiltered")
             }
             configureSubscriptions(supported)
+
+            // Equipment type: the console reports it directly as the DEVICE_TYPE feature's
+            // initial event after subscribing; the supported-feature-set heuristic covers
+            // consoles that don't implement it. transitionToWorkout() branches on this.
+            detectedDeviceType = resolveDeviceType(supported)
             _deviceIdentity.value = DeviceIdentity()
 
             // Bring the console up to the workout-active state the way the firmware expects.
@@ -147,6 +152,7 @@ class V2Session(
         featureAccumulator.clear()
         unknownFeatureCodes.clear()
         _supportedFeatures.value = null
+        _reportedDeviceType.value = null
         _exerciseData.value = null
         _deviceIdentity.value = null
         _degradedReason.value = null
@@ -164,8 +170,9 @@ class V2Session(
      */
     private suspend fun haltForTeardown() {
         if (!detectedDeviceType.isBeltBased) return
-        transport.write(V2Codec.encode(V2Message.Outgoing.WriteFeature(V2FeatureId.TARGET_KPH, 0f)))
-        // Drop incline to 0 too, so an incline trainer doesn't park raised after teardown.
+        // No 0-speed write: belt-speed values below 0.5 kph are not accepted on V2 (the console
+        // errors them) — PAUSED is what halts the belt.
+        // Drop incline to 0 so an incline trainer doesn't park raised after teardown.
         transport.write(V2Codec.encode(V2Message.Outgoing.WriteFeature(V2FeatureId.TARGET_GRADE, 0f)))
         transport.write(V2Codec.encode(
             V2Message.Outgoing.WriteFeature(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.PAUSED.raw),
@@ -374,6 +381,7 @@ class V2Session(
 
     private fun applyEvent(feature: V2FeatureId, value: Float) {
         when (feature) {
+            V2FeatureId.DEVICE_TYPE -> _reportedDeviceType.value = value
             V2FeatureId.WATTS -> accumulator.updatePower(value.toInt())
             V2FeatureId.RPM -> accumulator.updateCadence(value.toInt())
             V2FeatureId.CURRENT_KPH -> accumulator.updateSpeed(value)
@@ -437,9 +445,50 @@ class V2Session(
     }
 
     /**
-     * Heuristic: V2 has no equipment-id field, so we infer type from the feature set the console
-     * declared. Treadmills / incline trainers report belt-speed and grade features but no flywheel
-     * resistance; bikes, ellipticals and rowers report resistance features.
+     * Resolves the equipment type, preferring the console's own report: when it declared the
+     * [V2FeatureId.DEVICE_TYPE] feature, wait briefly for its initial event (pushed right after
+     * subscribing) and map the code. Otherwise — or if the event never arrives, or carries a code
+     * outside the exercise-equipment range — fall back to [deriveDeviceType].
+     */
+    private suspend fun resolveDeviceType(supported: Set<V2FeatureId>?): DeviceType {
+        if (supported != null && V2FeatureId.DEVICE_TYPE in supported) {
+            val raw = withTimeoutOrNull(DEVICE_TYPE_TIMEOUT_MS) {
+                _reportedDeviceType.filterNotNull().first()
+            }
+            val mapped = raw?.let { mapReportedDeviceType(it) }
+            if (mapped != null) {
+                logger.i(TAG, "Detected device type: $mapped (console-reported code ${raw.toInt()})")
+                return mapped
+            }
+            logger.w(TAG, "Console-reported device type unusable (raw=$raw) — falling back to feature heuristic")
+        }
+        if (supported == null) {
+            logger.w(TAG, "Assuming $detectedDeviceType (no feature list to infer from)")
+            return detectedDeviceType
+        }
+        return deriveDeviceType(supported).also {
+            logger.i(TAG, "Detected device type: $it (inferred from ${supported.size} features)")
+        }
+    }
+
+    /**
+     * Equipment-type codes the console reports in the [V2FeatureId.DEVICE_TYPE] feature, mapped
+     * to our coarser model. Codes outside the exercise-equipment range (wearables, controllers,
+     * weight machines…) return null and defer to the feature heuristic.
+     */
+    private fun mapReportedDeviceType(raw: Float): DeviceType? = when (raw.toInt()) {
+        4, 5 -> DeviceType.TREADMILL      // treadmill, incline trainer — both belt-based
+        6, 9, 19 -> DeviceType.ELLIPTICAL // elliptical variants and striders
+        7, 8 -> DeviceType.BIKE           // exercise bike, spin bike
+        20 -> DeviceType.ROWER
+        else -> null
+    }
+
+    /**
+     * Heuristic fallback for consoles that don't implement the device-type feature: infer from
+     * the feature set the console declared. Treadmills / incline trainers report belt-speed and
+     * grade features but no flywheel resistance; bikes, ellipticals and rowers report resistance
+     * features.
      */
     private fun deriveDeviceType(features: Set<V2FeatureId>): DeviceType {
         val hasResistance = V2FeatureId.TARGET_RESISTANCE in features ||
@@ -497,6 +546,8 @@ class V2Session(
         // and retry: subscriptions depend on its answer.
         private const val SUPPORTED_FEATURES_TIMEOUT_MS = 4_000L
         private const val QUERY_FEATURES_ATTEMPTS = 3
+        // The DEVICE_TYPE initial event lands right after the subscribe ACKs — a short wait.
+        private const val DEVICE_TYPE_TIMEOUT_MS = 2_000L
 
         // V1 [com.nettarion.hyperborea.hardware.fitpro.v1.WorkoutMode] raw codes used by the
         // orchestrator's workout-mode monitor — kept here as a translation target for V2's WORKOUT_STATE.

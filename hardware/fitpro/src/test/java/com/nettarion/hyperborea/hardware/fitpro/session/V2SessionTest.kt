@@ -215,6 +215,35 @@ class V2SessionTest {
     }
 
     @Test
+    fun `console-reported device type wins over the feature heuristic`() = runTest {
+        val session = createSession(this)
+        // Feature set says "bike" (resistance present) — but the console reports its own type.
+        emitSupportedFeatures(
+            V2FeatureId.DEVICE_TYPE, V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WORKOUT_STATE,
+        )
+        transport.emitIncoming(buildEventPacket(V2FeatureId.DEVICE_TYPE, 4f)) // treadmill code
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.detectedDeviceType).isEqualTo(DeviceType.TREADMILL)
+    }
+
+    @Test
+    fun `missing device-type event falls back to the feature heuristic`() = runTest {
+        val session = createSession(this)
+        // DEVICE_TYPE declared but its initial event never arrives; resistance → bike.
+        emitSupportedFeatures(
+            V2FeatureId.DEVICE_TYPE, V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WORKOUT_STATE,
+        )
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.detectedDeviceType).isEqualTo(DeviceType.BIKE)
+    }
+
+    @Test
     fun `feature frames without a terminator are still used after the wait times out`() = runTest {
         val session = createSession(this)
         // Frames arrive but the empty end-of-list frame never does.

@@ -1,6 +1,8 @@
 package com.nettarion.hyperborea.hardware.fitpro.v2
 
 enum class V2FeatureId(val code: Int) {
+    /** Equipment-type code reported by the console — see [V2Session.mapReportedDeviceType]. */
+    DEVICE_TYPE(10),
     SYSTEM_MODE(102),
     CURRENT_CALORIES(202),
     PULSE(222),
@@ -33,8 +35,9 @@ enum class V2FeatureId(val code: Int) {
         }
 
         val subscribable: List<V2FeatureId> = listOf(
-            SYSTEM_MODE, WORKOUT_STATE, CURRENT_CALORIES, PULSE, DISTANCE, CURRENT_KPH, RPM,
-            CURRENT_GRADE, TARGET_RESISTANCE, MAX_RESISTANCE, WATTS, RUNNING_TIME,
+            DEVICE_TYPE, SYSTEM_MODE, WORKOUT_STATE, CURRENT_CALORIES, PULSE, DISTANCE,
+            CURRENT_KPH, RPM, CURRENT_GRADE, TARGET_RESISTANCE, MAX_RESISTANCE, WATTS,
+            RUNNING_TIME,
         )
     }
 }
