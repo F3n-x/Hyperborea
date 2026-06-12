@@ -31,13 +31,6 @@ class V2FeatureIdTest {
     }
 
     @Test
-    fun `HEART_BEAT_INTERVAL wire bytes`() {
-        val feature = V2FeatureId.HEART_BEAT_INTERVAL
-        assertThat(feature.wireLo).isEqualTo(0xA1.toByte())
-        assertThat(feature.wireHi).isEqualTo(0x00.toByte())
-    }
-
-    @Test
     fun `RPM wire bytes`() {
         val feature = V2FeatureId.RPM
         assertThat(feature.code).isEqualTo(322)
@@ -59,11 +52,6 @@ class V2FeatureIdTest {
         assertThat(feature.code).isEqualTo(604)
         assertThat(feature.wireLo).isEqualTo(0x5C.toByte())
         assertThat(feature.wireHi).isEqualTo(0x02.toByte())
-    }
-
-    @Test
-    fun `subscribable list does not include HEART_BEAT_INTERVAL`() {
-        assertThat(V2FeatureId.subscribable).doesNotContain(V2FeatureId.HEART_BEAT_INTERVAL)
     }
 
     @Test

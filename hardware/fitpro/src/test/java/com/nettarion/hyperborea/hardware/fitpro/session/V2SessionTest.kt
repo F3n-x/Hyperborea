@@ -124,17 +124,122 @@ class V2SessionTest {
     }
 
     @Test
-    fun `heartbeat sends periodically`() = runTest {
+    fun `no periodic keepalive packets while streaming`() = runTest {
+        // The V2 protocol has no keepalive feature — nothing must be written unprompted.
         val session = createSession(this)
         session.start()
         advanceUntilIdle()
 
         val countBefore = transport.writtenPackets.size
-        advanceTimeBy(720 + 50)
+        advanceTimeBy(30_000)
+        runCurrent()
 
-        val heartbeats = transport.writtenPackets.drop(countBefore)
-        assertThat(heartbeats).isNotEmpty()
+        assertThat(transport.writtenPackets.size).isEqualTo(countBefore)
     }
+
+    @Test
+    fun `subscribe only requests console-supported features`() = runTest {
+        val session = createSession(this)
+        emitSupportedFeatures(
+            V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WATTS, V2FeatureId.WORKOUT_STATE,
+        )
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(subscribedFeatures()).containsExactly(
+            V2FeatureId.WORKOUT_STATE, V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WATTS,
+        )
+    }
+
+    @Test
+    fun `subscriptions are cleared before subscribing`() = runTest {
+        val session = createSession(this)
+        emitSupportedFeatures(
+            V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WORKOUT_STATE,
+        )
+
+        session.start()
+        advanceUntilIdle()
+
+        // An empty Unsubscribe (type 0x07, zero-length payload) must precede the first Subscribe.
+        val clearIndex = transport.writtenPackets.indexOfFirst {
+            (it[1].toInt() and 0x0F) == 0x07 && it[2].toInt() == 0
+        }
+        val firstSubscribeIndex = transport.writtenPackets.indexOfFirst {
+            (it[1].toInt() and 0x0F) == 0x01
+        }
+        assertThat(clearIndex).isAtLeast(0)
+        assertThat(firstSubscribeIndex).isGreaterThan(clearIndex)
+    }
+
+    @Test
+    fun `subscribe falls back to the full wanted list when the console never declares features`() = runTest {
+        val session = createSession(this)
+        // No SupportedFeatures reply at all.
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(subscribedFeatures()).containsExactlyElementsIn(V2FeatureId.subscribable)
+    }
+
+    @Test
+    fun `multi-frame feature list is accumulated and detects a treadmill`() = runTest {
+        // Real consoles stream the list as many small frames (some carrying only feature ids we
+        // don't model) and finish with an empty terminator. The treadmill verdict requires the
+        // union — its grade/speed features arrive in late frames.
+        val session = createSession(this)
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.SYSTEM_MODE))
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.CURRENT_CALORIES))
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.PULSE, V2FeatureId.DISTANCE))
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.TARGET_KPH, V2FeatureId.CURRENT_KPH))
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.TARGET_GRADE, V2FeatureId.CURRENT_GRADE))
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.WORKOUT_STATE, V2FeatureId.RUNNING_TIME))
+        // Frame carrying feature ids outside our enum — list content, NOT a terminator.
+        transport.emitIncoming(byteArrayOf(0x02, 0x21, 0x04, 0x2F, 0x01, 0x30, 0x01))
+        transport.emitIncoming(buildSupportedFeaturesPacket()) // end of list
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.detectedDeviceType).isEqualTo(DeviceType.TREADMILL)
+        // Subscriptions reflect the union, not any single frame.
+        assertThat(subscribedFeatures()).containsExactly(
+            V2FeatureId.SYSTEM_MODE, V2FeatureId.WORKOUT_STATE, V2FeatureId.CURRENT_CALORIES,
+            V2FeatureId.PULSE, V2FeatureId.DISTANCE, V2FeatureId.CURRENT_KPH,
+            V2FeatureId.CURRENT_GRADE, V2FeatureId.RUNNING_TIME,
+        )
+        // Critical treadmill behaviour: never command RUNNING from the app.
+        val workoutStateWrites = transport.writtenPackets.mapNotNull { it.workoutStateWriteValue() }
+        assertThat(workoutStateWrites).doesNotContain(V2WorkoutMode.RUNNING.raw)
+    }
+
+    @Test
+    fun `feature frames without a terminator are still used after the wait times out`() = runTest {
+        val session = createSession(this)
+        // Frames arrive but the empty end-of-list frame never does.
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WATTS))
+        transport.emitIncoming(buildSupportedFeaturesPacket(V2FeatureId.WORKOUT_STATE))
+
+        session.start()
+        advanceUntilIdle()
+
+        assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
+        assertThat(subscribedFeatures()).containsExactly(
+            V2FeatureId.WORKOUT_STATE, V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WATTS,
+        )
+    }
+
+    /** Feature ids carried by all outgoing Subscribe packets (type nibble 0x01). */
+    private fun subscribedFeatures(): List<V2FeatureId> =
+        transport.writtenPackets
+            .filter { (it[1].toInt() and 0x0F) == 0x01 }
+            .flatMap { pkt ->
+                val len = pkt[2].toInt() and 0xFF
+                (0 until len / 2).mapNotNull { i ->
+                    V2FeatureId.fromWireBytes(pkt[3 + i * 2], pkt[4 + i * 2])
+                }
+            }
 
     @Test
     fun `writeFeature sends WriteFeature for SetResistance`() = runTest {
@@ -447,11 +552,11 @@ class V2SessionTest {
     fun `treadmill features write WARM_UP but never RUNNING and clear degraded`() = runTest {
         // Treadmill profile: belt speed + grade, no flywheel resistance.
         val session = createSession(this)
-        transport.emitIncoming(buildSupportedFeaturesPacket(
+        emitSupportedFeatures(
             V2FeatureId.TARGET_KPH, V2FeatureId.CURRENT_KPH,
             V2FeatureId.TARGET_GRADE, V2FeatureId.CURRENT_GRADE,
             V2FeatureId.WORKOUT_STATE,
-        ))
+        )
         // Only WARM_UP confirmation arrives — the MCU is waiting on the physical Start key, no
         // RUNNING event ever comes.
         transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.WARM_UP.raw))
@@ -473,10 +578,10 @@ class V2SessionTest {
     fun `bike features still drive the full WARM_UP then RUNNING transition`() = runTest {
         // Bike profile: resistance features present.
         val session = createSession(this)
-        transport.emitIncoming(buildSupportedFeaturesPacket(
+        emitSupportedFeatures(
             V2FeatureId.TARGET_RESISTANCE, V2FeatureId.MAX_RESISTANCE,
             V2FeatureId.RPM, V2FeatureId.WATTS, V2FeatureId.WORKOUT_STATE,
-        ))
+        )
         transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.WARM_UP.raw))
         transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.RUNNING.raw))
 
@@ -495,9 +600,9 @@ class V2SessionTest {
         // The orchestrator's workout-mode monitor uses V1 codes; V2 must translate so the same
         // monitor reacts uniformly to both protocols.
         val session = createSession(this)
-        transport.emitIncoming(buildSupportedFeaturesPacket(
+        emitSupportedFeatures(
             V2FeatureId.TARGET_RESISTANCE, V2FeatureId.WORKOUT_STATE,
-        ))
+        )
         transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.WARM_UP.raw))
         transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.RUNNING.raw))
 
@@ -533,7 +638,8 @@ class V2SessionTest {
 
     /**
      * Build a SupportedFeatures response packet. Source = device (0x02), type nibble = RSP_FEATURES
-     * (0x01), so sourceType byte = 0x21. Payload = list of (lo, hi) pairs.
+     * (0x01), so sourceType byte = 0x21. Payload = list of (lo, hi) pairs. An empty packet is the
+     * end-of-list terminator.
      */
     private fun buildSupportedFeaturesPacket(vararg features: V2FeatureId): ByteArray {
         val payload = ByteArray(features.size * 2)
@@ -542,6 +648,12 @@ class V2SessionTest {
             payload[i * 2 + 1] = feature.wireHi
         }
         return byteArrayOf(0x02, 0x21, payload.size.toByte(), *payload)
+    }
+
+    /** Emit the console's supported-features list the way real consoles send it: frames + empty terminator. */
+    private suspend fun emitSupportedFeatures(vararg features: V2FeatureId) {
+        transport.emitIncoming(buildSupportedFeaturesPacket(*features))
+        transport.emitIncoming(buildSupportedFeaturesPacket())
     }
 
     private fun buildEventPacket(feature: V2FeatureId, value: Float): ByteArray {

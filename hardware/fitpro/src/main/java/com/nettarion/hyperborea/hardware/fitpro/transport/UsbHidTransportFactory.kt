@@ -54,7 +54,9 @@ class UsbHidTransportFactory(
         val connection = usbManager.openDevice(device)
             ?: throw IllegalStateException("Failed to open USB device (permission denied?)")
 
-        val transport = UsbHidTransport(connection, usbInterface, inEndpoint, outEndpoint, logger)
+        val transport = UsbHidTransport(
+            context, connection, usbInterface, inEndpoint, outEndpoint, device.deviceName, logger,
+        )
         return HidTransportResult(transport, device.productId)
     }
 

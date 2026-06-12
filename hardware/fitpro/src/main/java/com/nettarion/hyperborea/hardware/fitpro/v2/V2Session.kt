@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -56,8 +55,15 @@ class V2Session(
     /** Latest [V2FeatureId.WORKOUT_STATE] value reported by the console (raw [V2WorkoutMode] ordinal); null until first event. */
     private val _workoutMode = MutableStateFlow<Float?>(null)
 
-    /** Features the console declared it supports, captured from the [V2Message.Incoming.SupportedFeatures] response. */
+    /**
+     * The complete feature set the console declared, published once the multi-frame
+     * supported-features list terminates (see [V2Message.Incoming.SupportedFeatures]).
+     */
     private val _supportedFeatures = MutableStateFlow<Set<V2FeatureId>?>(null)
+
+    /** Union of supported-features frames received so far (the list arrives in pieces). */
+    private val featureAccumulator = mutableSetOf<V2FeatureId>()
+    private val unknownFeatureCodes = mutableSetOf<Int>()
 
     /**
      * Equipment type derived from the supported-features set after the QueryFeatures handshake. The
@@ -68,7 +74,6 @@ class V2Session(
     override var detectedDeviceType: DeviceType = DeviceType.BIKE
         private set
 
-    private var heartbeatJob: Job? = null
     private var receiveJob: Job? = null
     private var lastSentGrade = 0f
     private var lastSentSpeed = 0f
@@ -82,13 +87,20 @@ class V2Session(
             transport.open()
 
             _sessionState.value = SessionState.Handshaking
-            queryAndSubscribe()
-            startReceiveLoop()   // WORKOUT_STATE (and other) events flow now
-            startHeartbeat()     // keeps the console alive during the workout-mode transition below
+            startReceiveLoop()   // must run before the query so the reply isn't raced
 
-            // Wait briefly for the console to declare its supported features, then derive the
-            // equipment type from them. transitionToWorkout() branches on this.
-            awaitDeviceType()
+            // The console must declare its supported features before we subscribe — it rejects
+            // subscriptions to features it doesn't implement. The feature set also tells us the
+            // equipment type; transitionToWorkout() branches on this.
+            val supported = querySupportedFeatures(QUERY_FEATURES_ATTEMPTS)
+            if (supported != null) {
+                detectedDeviceType = deriveDeviceType(supported)
+                logger.i(TAG, "Detected device type: $detectedDeviceType (from ${supported.size} features)")
+            } else {
+                logger.w(TAG, "Console never declared supported features — assuming $detectedDeviceType, subscribing unfiltered")
+            }
+            configureSubscriptions(supported)
+            _deviceIdentity.value = DeviceIdentity()
 
             // Bring the console up to the workout-active state the way the firmware expects.
             transitionToWorkout()
@@ -100,14 +112,14 @@ class V2Session(
             throw e
         } catch (e: Exception) {
             logger.e(TAG, "Failed to start V2 session", e)
+            receiveJob?.cancel()
+            receiveJob = null
             try { transport.close() } catch (_: Exception) {}
             _sessionState.value = SessionState.Error(e.message ?: "V2 session failed", e)
         }
     }
 
     override suspend fun stop() {
-        heartbeatJob?.cancel()
-        heartbeatJob = null
         receiveJob?.cancel()
         receiveJob = null
 
@@ -119,15 +131,22 @@ class V2Session(
                     V2Message.Outgoing.WriteFeature(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.NONE.raw),
                 ))
                 transport.write(V2Codec.encode(V2Message.Outgoing.Unsubscribe(V2FeatureId.subscribable)))
-                transport.close()
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logger.w(TAG, "Error during V2 session stop: ${e.message}")
+        } finally {
+            // Always release the USB connection, even when the teardown writes fail on a dead
+            // link — skipping this leaks the connection (and the interface claim) until the GC
+            // finalizer complains.
+            try { transport.close() } catch (e: Exception) { logger.w(TAG, "Transport close failed: ${e.message}") }
         }
 
         accumulator.reset()
+        featureAccumulator.clear()
+        unknownFeatureCodes.clear()
+        _supportedFeatures.value = null
         _exerciseData.value = null
         _deviceIdentity.value = null
         _degradedReason.value = null
@@ -157,13 +176,19 @@ class V2Session(
     override suspend fun identify(): DeviceIdentity? {
         try {
             transport.open()
-            queryAndSubscribe()
+            startReceiveLoop()
+            // V2 has no identity fields to read; one features query confirms the console is talking.
+            val supported = querySupportedFeatures(attempts = 1)
+            logger.i(TAG, if (supported != null) "Console replied with ${supported.size} features" else "Console didn't reply to features query")
+            _deviceIdentity.value = DeviceIdentity()
             return _deviceIdentity.value
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             logger.e(TAG, "Identify failed", e)
             return null
         } finally {
+            receiveJob?.cancel()
+            receiveJob = null
             try { transport.close() } catch (_: Exception) {}
         }
     }
@@ -241,19 +266,48 @@ class V2Session(
         }
     }
 
-    private suspend fun queryAndSubscribe() {
-        // Query supported features
-        transport.write(V2Codec.encode(V2Message.Outgoing.QueryFeatures()))
-
-        // Subscribe in batches of 8
-        val batches = V2FeatureId.subscribable.chunked(MAX_SUBSCRIBE_BATCH)
-        logger.d(TAG, "Subscribing to ${V2FeatureId.subscribable.size} features in ${batches.size} batches")
-        for (batch in batches) {
-            val subscribe = V2Message.Outgoing.Subscribe(batch)
-            transport.write(V2Codec.encode(subscribe))
+    /**
+     * Asks the console for its supported-features list, waiting [SUPPORTED_FEATURES_TIMEOUT_MS]
+     * per attempt (it's the console's slowest reply). The list arrives as a frame series ending
+     * in an empty terminator frame; if frames arrived but the terminator never did, the partial
+     * union is better than nothing. Returns null only if the console never answered at all.
+     */
+    private suspend fun querySupportedFeatures(attempts: Int): Set<V2FeatureId>? {
+        repeat(attempts) { attempt ->
+            transport.write(V2Codec.encode(V2Message.Outgoing.QueryFeatures()))
+            val features = withTimeoutOrNull(SUPPORTED_FEATURES_TIMEOUT_MS) {
+                _supportedFeatures.filterNotNull().first()
+            }
+            if (features != null) return features
+            logger.w(TAG, "No complete supported-features reply within ${SUPPORTED_FEATURES_TIMEOUT_MS}ms (attempt ${attempt + 1}/$attempts)")
         }
+        if (featureAccumulator.isNotEmpty()) {
+            logger.w(TAG, "Supported-features list never terminated — using ${featureAccumulator.size} accumulated features")
+            return featureAccumulator.toSet()
+        }
+        return null
+    }
 
-        _deviceIdentity.value = DeviceIdentity()
+    /**
+     * Clears whatever subscriptions a previous client left active (an empty Unsubscribe), then
+     * subscribes to the features we want — restricted to what the console declared it supports,
+     * because consoles reject Subscribe commands naming features they don't implement. With a
+     * null [supported] (console never answered the query) we subscribe unfiltered and let the
+     * console sort it out.
+     */
+    private suspend fun configureSubscriptions(supported: Set<V2FeatureId>?) {
+        transport.write(V2Codec.encode(V2Message.Outgoing.Unsubscribe(emptyList())))
+
+        val wanted = V2FeatureId.subscribable.filter { supported == null || it in supported }
+        if (wanted.isEmpty()) {
+            logger.w(TAG, "Console supports none of the features we want — no subscriptions made")
+            return
+        }
+        val batches = wanted.chunked(MAX_SUBSCRIBE_BATCH)
+        logger.d(TAG, "Subscribing to ${wanted.size} features in ${batches.size} batches")
+        for (batch in batches) {
+            transport.write(V2Codec.encode(V2Message.Outgoing.Subscribe(batch)))
+        }
     }
 
     private fun startReceiveLoop() {
@@ -296,13 +350,23 @@ class V2Session(
                 }
             }
             is V2Message.Incoming.SupportedFeatures -> {
-                _supportedFeatures.value = message.features.toSet()
-                logger.d(TAG, "Supported features: ${message.features.map { it.name }}")
+                if (message.isEndOfList) {
+                    if (unknownFeatureCodes.isNotEmpty()) {
+                        logger.i(TAG, "Console declared ${unknownFeatureCodes.size} feature ids we don't use: $unknownFeatureCodes")
+                    }
+                    logger.i(TAG, "Supported features complete: ${featureAccumulator.map { it.name }}")
+                    _supportedFeatures.value = featureAccumulator.toSet()
+                } else {
+                    featureAccumulator += message.features
+                    unknownFeatureCodes += message.unknownCodes
+                    logger.d(TAG, "Supported-features frame: ${message.features.map { it.name }}" +
+                        if (message.unknownCodes.isNotEmpty()) " + unknown ${message.unknownCodes}" else "")
+                }
             }
             is V2Message.Incoming.Acknowledge ->
                 logger.d(TAG, "ACK: ${message.type}")
             is V2Message.Incoming.Error ->
-                logger.w(TAG, "Device error code: ${message.code}")
+                logger.w(TAG, "Console rejected ${message.describe()}")
             is V2Message.Incoming.Unknown ->
                 logger.d(TAG, "Unknown message: ${message.raw.size} bytes")
         }
@@ -323,7 +387,6 @@ class V2Session(
             V2FeatureId.RUNNING_TIME -> accumulator.updateElapsedTime(value.toLong())
             V2FeatureId.TARGET_KPH -> accumulator.updateTargetSpeed(value)
             V2FeatureId.TARGET_GRADE -> accumulator.updateTargetIncline(value)
-            V2FeatureId.HEART_BEAT_INTERVAL -> { /* Protocol keepalive echo */ }
             V2FeatureId.SYSTEM_MODE -> { /* System on/standby/sleep — not the workout state, and not exercise data */ }
             // Translated to V1 [com.nettarion.hyperborea.hardware.fitpro.v1.WorkoutMode] numbering
             // when pushed to the accumulator, so the orchestrator's workout-mode monitor (which
@@ -371,23 +434,6 @@ class V2Session(
         _degradedReason.value =
             if (running) null
             else "The console didn't confirm the workout started — resistance/speed may not respond"
-    }
-
-    /**
-     * Wait briefly for the QueryFeatures response, then resolve [detectedDeviceType]. If the
-     * response never arrives we keep the constructor-supplied default; the failure mode is just
-     * "treadmills get treated as bikes here" (existing pre-this-change behaviour).
-     */
-    private suspend fun awaitDeviceType() {
-        val features = withTimeoutOrNull(SUPPORTED_FEATURES_TIMEOUT_MS) {
-            _supportedFeatures.filterNotNull().first()
-        }
-        if (features == null) {
-            logger.w(TAG, "Console didn't reply with supported features within ${SUPPORTED_FEATURES_TIMEOUT_MS}ms — assuming $detectedDeviceType")
-            return
-        }
-        detectedDeviceType = deriveDeviceType(features)
-        logger.i(TAG, "Detected device type: $detectedDeviceType (from ${features.size} features)")
     }
 
     /**
@@ -439,39 +485,18 @@ class V2Session(
         return ok
     }
 
-    private fun startHeartbeat() {
-        heartbeatJob = scope.launch {
-            // Runs from Handshaking on, so the console stays alive through the workout-mode transition too.
-            while (isActive &&
-                (_sessionState.value is SessionState.Streaming || _sessionState.value is SessionState.Handshaking)) {
-                try {
-                    val heartbeat = V2Message.Outgoing.WriteFeature(
-                        V2FeatureId.HEART_BEAT_INTERVAL,
-                        HEARTBEAT_VALUE,
-                    )
-                    transport.write(V2Codec.encode(heartbeat))
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    logger.w(TAG, "Heartbeat write failed: ${e.message}")
-                }
-                delay(HEARTBEAT_INTERVAL_MS)
-            }
-        }
-    }
-
     companion object {
         private const val TAG = "V2Session"
 
         // Belt-machine halt on stop: let the speed-0 + PAUSED writes settle before teardown.
         private const val BELT_HALT_SETTLE_MS = 200L
-        private const val HEARTBEAT_INTERVAL_MS = 720L
-        private const val HEARTBEAT_VALUE = 720f
         private const val MAX_SUBSCRIBE_BATCH = 8
         // How long to wait for the console to confirm a WORKOUT_STATE transition before continuing degraded.
         private const val STATE_CONFIRM_TIMEOUT_MS = 5_000L
-        // How long to wait for the SupportedFeatures response before falling back to BIKE.
-        private const val SUPPORTED_FEATURES_TIMEOUT_MS = 3_000L
+        // The features query is the console's slowest reply — give it longer than other commands,
+        // and retry: subscriptions depend on its answer.
+        private const val SUPPORTED_FEATURES_TIMEOUT_MS = 4_000L
+        private const val QUERY_FEATURES_ATTEMPTS = 3
 
         // V1 [com.nettarion.hyperborea.hardware.fitpro.v1.WorkoutMode] raw codes used by the
         // orchestrator's workout-mode monitor — kept here as a translation target for V2's WORKOUT_STATE.

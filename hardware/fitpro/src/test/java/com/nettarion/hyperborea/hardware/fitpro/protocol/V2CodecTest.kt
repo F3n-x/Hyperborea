@@ -99,11 +99,39 @@ class V2CodecTest {
     }
 
     @Test
-    fun `decode Error packet`() {
-        val packet = byteArrayOf(0x02, 0x24, 0x01, 0x42) // type=ERROR, code=0x42
+    fun `decode Error packet carries rejected command and reason code`() {
+        // type=ERROR, payload = [rejected command, reason]
+        val packet = byteArrayOf(0x02, 0x24, 0x02, 0x01, 0x03)
         val decoded = V2Codec.decode(packet)
         assertThat(decoded).isInstanceOf(V2Message.Incoming.Error::class.java)
-        assertThat((decoded as V2Message.Incoming.Error).code).isEqualTo(0x42)
+        val error = decoded as V2Message.Incoming.Error
+        assertThat(error.command).isEqualTo(0x01) // Subscribe
+        assertThat(error.code).isEqualTo(0x03)
+    }
+
+    @Test
+    fun `decode Error packet with missing reason byte defaults code to zero`() {
+        val packet = byteArrayOf(0x02, 0x24, 0x01, 0x42)
+        val decoded = V2Codec.decode(packet) as V2Message.Incoming.Error
+        assertThat(decoded.command).isEqualTo(0x42)
+        assertThat(decoded.code).isEqualTo(0)
+    }
+
+    @Test
+    fun `decode SupportedFeatures keeps unknown feature ids as list content`() {
+        // Two ids we don't model: 0x012F (303) and 0x0130 (304).
+        val packet = byteArrayOf(0x02, 0x21, 0x04, 0x2F, 0x01, 0x30, 0x01)
+        val decoded = V2Codec.decode(packet) as V2Message.Incoming.SupportedFeatures
+        assertThat(decoded.features).isEmpty()
+        assertThat(decoded.unknownCodes).containsExactly(303, 304)
+        assertThat(decoded.isEndOfList).isFalse()
+    }
+
+    @Test
+    fun `decode empty SupportedFeatures frame is the end-of-list terminator`() {
+        val packet = byteArrayOf(0x02, 0x21, 0x00)
+        val decoded = V2Codec.decode(packet) as V2Message.Incoming.SupportedFeatures
+        assertThat(decoded.isEndOfList).isTrue()
     }
 
     @Test

@@ -54,7 +54,11 @@ object V2Codec {
         return when (type) {
             RSP_FEATURES -> decodeSupportedFeatures(payload)
             RSP_ACKNOWLEDGE -> V2Message.Incoming.Acknowledge(sourceAndType)
-            RSP_ERROR -> V2Message.Incoming.Error(if (payload.isNotEmpty()) payload[0].toInt() and 0xFF else 0)
+            // Error payload: byte 0 = the command being rejected, byte 1 = the reason code.
+            RSP_ERROR -> V2Message.Incoming.Error(
+                command = if (payload.isNotEmpty()) payload[0].toInt() and 0xFF else 0,
+                code = if (payload.size > 1) payload[1].toInt() and 0xFF else 0,
+            )
             RSP_EVENT -> decodeEvent(payload)
             else -> V2Message.Incoming.Unknown(data.copyOf())
         }
@@ -97,11 +101,17 @@ object V2Codec {
 
     private fun decodeSupportedFeatures(payload: ByteArray): V2Message.Incoming {
         val features = mutableListOf<V2FeatureId>()
+        val unknownCodes = mutableListOf<Int>()
         var i = 0
         while (i + 1 < payload.size) {
-            V2FeatureId.fromWireBytes(payload[i], payload[i + 1])?.let { features.add(it) }
+            val feature = V2FeatureId.fromWireBytes(payload[i], payload[i + 1])
+            if (feature != null) {
+                features.add(feature)
+            } else {
+                unknownCodes.add((payload[i].toInt() and 0xFF) or ((payload[i + 1].toInt() and 0xFF) shl 8))
+            }
             i += 2
         }
-        return V2Message.Incoming.SupportedFeatures(features)
+        return V2Message.Incoming.SupportedFeatures(features, unknownCodes)
     }
 }
