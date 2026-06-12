@@ -278,9 +278,18 @@ class Orchestrator(
         //  - WORKOUT_MODE_IDLE from Paused → Running (safety key re-inserted) OR from
         //    Running/AwaitingConsoleStart → tear the workout down (user pressed the physical Stop
         //    key; symmetrical with app-side Stop).
+        // Whether the console has confirmed leaving idle since this session armed. Some belt
+        // machines refuse the app's WARM_UP write outright and keep reporting idle until the
+        // physical Start key is pressed — for those, an idle report while armed is the normal
+        // parked state, not the user pressing Stop.
+        var consoleLeftIdle = false
         workoutModeMonitorJob = scope.launch {
             hardwareAdapter.exerciseData.filterNotNull()
                 .collect { data ->
+                    if (data.workoutMode != null &&
+                        data.workoutMode != WORKOUT_MODE_IDLE && data.workoutMode != WORKOUT_MODE_UNKNOWN) {
+                        consoleLeftIdle = true
+                    }
                     when (data.workoutMode) {
                         WORKOUT_MODE_RUNNING -> {
                             if (_state.value is OrchestratorState.AwaitingConsoleStart) {
@@ -305,13 +314,19 @@ class Orchestrator(
                                     _state.value = OrchestratorState.Running(degraded = hardwareAdapter.degradedReason.value)
                                 }
                                 is OrchestratorState.Running, is OrchestratorState.AwaitingConsoleStart -> {
-                                    // User pressed the physical Stop key. The Dashboard's
-                                    // save-ride dialog gates on elapsed ≥ 60 s, so calling stop()
-                                    // with saveRide=false from AwaitingConsoleStart (elapsed=0)
-                                    // is a clean silent teardown.
-                                    val wasRunning = current is OrchestratorState.Running
-                                    logger.i(TAG, "Console returned to IDLE — stopping workout (running=$wasRunning)")
-                                    scope.launch { stop(saveRide = wasRunning) }
+                                    if (current is OrchestratorState.AwaitingConsoleStart && !consoleLeftIdle) {
+                                        // Armed but the console never confirmed leaving idle —
+                                        // it's still parked, not stopping. Stay armed.
+                                        logger.d(TAG, "Idle report while armed (console never left idle) — staying armed")
+                                    } else {
+                                        // User pressed the physical Stop key. The Dashboard's
+                                        // save-ride dialog gates on elapsed ≥ 60 s, so calling stop()
+                                        // with saveRide=false from AwaitingConsoleStart (elapsed=0)
+                                        // is a clean silent teardown.
+                                        val wasRunning = current is OrchestratorState.Running
+                                        logger.i(TAG, "Console returned to IDLE — stopping workout (running=$wasRunning)")
+                                        scope.launch { stop(saveRide = wasRunning) }
+                                    }
                                 }
                                 else -> {}
                             }
@@ -578,6 +593,7 @@ class Orchestrator(
         const val PROBE_TIMEOUT_MS = 10_000L
         const val PREREQUISITE_TIMEOUT_MS = 10_000L
         const val REFRESH_TIMEOUT_MS = 5_000L
+        const val WORKOUT_MODE_UNKNOWN = 0
         const val WORKOUT_MODE_IDLE = 1
         const val WORKOUT_MODE_RUNNING = 2
         const val WORKOUT_MODE_DMK = 8

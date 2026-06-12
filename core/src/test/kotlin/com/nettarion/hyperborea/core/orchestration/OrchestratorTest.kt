@@ -671,14 +671,44 @@ class OrchestratorTest {
     }
 
     @Test
-    fun `treadmill WORKOUT_MODE 1 from AwaitingConsoleStart tears the workout down silently`() = runTest {
+    fun `treadmill idle report while armed stays armed when the console never left idle`() = runTest {
+        // Some belt machines refuse the app's WARM_UP write and keep reporting idle until the
+        // physical Start key — that idle is the parked state, not the user pressing Stop.
         val env = TestEnv(this)
         env.hardware.deviceInfo.value = buildDeviceInfo(type = DeviceType.TREADMILL)
         env.orchestrator.start()
         advanceUntilIdle()
         assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.AwaitingConsoleStart::class.java)
 
-        // User changed their mind, pressed console Stop while the equipment was armed.
+        // Console reports its (unchanged) idle workout state right after subscribing.
+        env.hardware.exerciseData.value = ExerciseData(
+            power = 0, cadence = 0, speed = 0f, resistance = 0,
+            incline = 0f, heartRate = null, distance = null, calories = null,
+            elapsedTime = 0, workoutMode = 1,
+        )
+        advanceUntilIdle()
+
+        assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.AwaitingConsoleStart::class.java)
+    }
+
+    @Test
+    fun `treadmill WORKOUT_MODE 1 after confirmed WARM_UP tears the armed workout down silently`() = runTest {
+        val env = TestEnv(this)
+        env.hardware.deviceInfo.value = buildDeviceInfo(type = DeviceType.TREADMILL)
+        env.orchestrator.start()
+        advanceUntilIdle()
+        assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.AwaitingConsoleStart::class.java)
+
+        // Console confirmed WARM_UP (left idle, code 10), still awaiting the Start key…
+        env.hardware.exerciseData.value = ExerciseData(
+            power = 0, cadence = 0, speed = 0f, resistance = 0,
+            incline = 0f, heartRate = null, distance = null, calories = null,
+            elapsedTime = 0, workoutMode = 10,
+        )
+        advanceUntilIdle()
+        assertThat(env.orchestrator.state.value).isInstanceOf(OrchestratorState.AwaitingConsoleStart::class.java)
+
+        // …then the user changed their mind and pressed console Stop while armed.
         env.hardware.exerciseData.value = ExerciseData(
             power = 0, cadence = 0, speed = 0f, resistance = 0,
             incline = 0f, heartRate = null, distance = null, calories = null,

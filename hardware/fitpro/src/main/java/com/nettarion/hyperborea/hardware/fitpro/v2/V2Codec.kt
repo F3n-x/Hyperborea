@@ -54,10 +54,17 @@ object V2Codec {
         return when (type) {
             RSP_FEATURES -> decodeSupportedFeatures(payload)
             RSP_ACKNOWLEDGE -> V2Message.Incoming.Acknowledge(sourceAndType)
-            // Error payload: byte 0 = the command being rejected, byte 1 = the reason code.
+            // Error payload: byte 0 = the command being rejected, byte 1 = the reason code,
+            // then (for write/value errors) the feature id and the refused float value.
             RSP_ERROR -> V2Message.Incoming.Error(
                 command = if (payload.isNotEmpty()) payload[0].toInt() and 0xFF else 0,
                 code = if (payload.size > 1) payload[1].toInt() and 0xFF else 0,
+                featureCode = if (payload.size >= 4) {
+                    (payload[2].toInt() and 0xFF) or ((payload[3].toInt() and 0xFF) shl 8)
+                } else null,
+                value = if (payload.size >= 8) {
+                    ByteBuffer.wrap(payload, 4, 4).order(ByteOrder.LITTLE_ENDIAN).float
+                } else null,
             )
             RSP_EVENT -> decodeEvent(payload)
             else -> V2Message.Incoming.Unknown(data.copyOf())

@@ -14,10 +14,22 @@ sealed interface V2Message {
 
         /**
          * Console rejection. [command] is the outgoing command id the console is rejecting
-         * (e.g. 0x01 = Subscribe); [code] is why — see [describeCode].
+         * (e.g. 0x01 = Subscribe); [code] is why — see [describeCode]. Write rejections carry
+         * the offending [featureCode] and, when present, the [value] that was refused.
          */
-        data class Error(val command: Int, val code: Int) : Incoming {
-            fun describe(): String = "command=0x%02x reason=%s".format(command, describeCode(code))
+        data class Error(
+            val command: Int,
+            val code: Int,
+            val featureCode: Int? = null,
+            val value: Float? = null,
+        ) : Incoming {
+            fun describe(): String = buildString {
+                append("command=0x%02x reason=%s".format(command, describeCode(code)))
+                if (featureCode != null) {
+                    append(" feature=").append(V2FeatureId.fromCode(featureCode)?.name ?: featureCode.toString())
+                    if (value != null) append(" value=").append(value)
+                }
+            }
 
             companion object {
                 /** Observed FitPro V2 error reasons; anything else is reported numerically. */

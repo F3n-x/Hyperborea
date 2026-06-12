@@ -115,6 +115,24 @@ class V2CodecTest {
         val decoded = V2Codec.decode(packet) as V2Message.Incoming.Error
         assertThat(decoded.command).isEqualTo(0x42)
         assertThat(decoded.code).isEqualTo(0)
+        assertThat(decoded.featureCode).isNull()
+        assertThat(decoded.value).isNull()
+    }
+
+    @Test
+    fun `decode write-rejection Error carries the feature and refused value`() {
+        // command=Write(0x02), reason=WRITE_VALUE_NOT_ALLOWED(7),
+        // feature=WORKOUT_STATE(602=0x025A), value=2.0f LE
+        val packet = byteArrayOf(
+            0x02, 0x24, 0x08,
+            0x02, 0x07, 0x5A, 0x02, 0x00, 0x00, 0x00, 0x40,
+        )
+        val decoded = V2Codec.decode(packet) as V2Message.Incoming.Error
+        assertThat(decoded.command).isEqualTo(0x02)
+        assertThat(decoded.code).isEqualTo(7)
+        assertThat(decoded.featureCode).isEqualTo(602)
+        assertThat(decoded.value).isEqualTo(2.0f)
+        assertThat(decoded.describe()).isEqualTo("command=0x02 reason=WRITE_VALUE_NOT_ALLOWED feature=WORKOUT_STATE value=2.0")
     }
 
     @Test
