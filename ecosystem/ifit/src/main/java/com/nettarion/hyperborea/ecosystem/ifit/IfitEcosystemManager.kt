@@ -24,7 +24,8 @@ class IfitEcosystemManager @Inject constructor() : EcosystemManager {
     override val prerequisites = listOf(
         Prerequisite(
             id = "ifit-standalone-stopped",
-            description = "iFit standalone must be stopped to release USB",
+            description = "iFit standalone is running and holds the USB device — " +
+                "re-run the Hyperborea deploy script to disable iFit",
             isMet = { snapshot ->
                 snapshot.components.none {
                     it.packageName == IFIT_STANDALONE_PACKAGE &&
@@ -35,7 +36,8 @@ class IfitEcosystemManager @Inject constructor() : EcosystemManager {
         ),
         Prerequisite(
             id = "glassos-service-stopped",
-            description = "GlassOS service must be stopped to release USB",
+            description = "The GlassOS service is running and holds the USB device — " +
+                "re-run the Hyperborea deploy script to disable iFit",
             isMet = { snapshot ->
                 snapshot.components.none {
                     it.packageName == GLASSOS_SERVICE_PACKAGE &&
@@ -46,7 +48,8 @@ class IfitEcosystemManager @Inject constructor() : EcosystemManager {
         ),
         Prerequisite(
             id = "eru-usb-receiver-disabled",
-            description = "ERU USB receiver must be disabled to prevent USB cycling",
+            description = "iFit's ERU USB receiver is still enabled and would disrupt the USB " +
+                "connection — re-run the Hyperborea deploy script to disable iFit",
             isMet = { snapshot ->
                 val receiver = snapshot.components.find {
                     it.packageName == ERU_PACKAGE &&

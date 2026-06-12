@@ -448,7 +448,7 @@ class Orchestrator(
             }
             val fulfill = prereq.fulfill
             if (fulfill == null) {
-                val msg = "Cannot fulfill $label prerequisite '${prereq.id}'"
+                val msg = "Unmet $label prerequisite '${prereq.id}': ${prereq.description}"
                 logger.e(TAG, msg)
                 _state.value = OrchestratorState.Error(msg)
                 return false
