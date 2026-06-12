@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [1.2.16] - 2026-06-12
 - **V2 consoles now report their real identity.** The app asks the console for its product information during the handshake — model name, serial number, firmware version, and hardware part number — so Device settings show the actual equipment instead of "FitPro Device" with blank fields, and the part number unlocks the built-in equipment catalog (correct speed/incline/resistance ranges and power curves) for V2 machines the same way it already worked for V1.
 - **Physical console buttons now work on V2.** Keypad presses (start, stop, speed/incline/resistance up & down) are reported by V2 consoles on a dedicated feature; the app now subscribes to it and routes the presses through the same console-key handling V1 machines already had.
 - **The app never writes a feature the console didn't declare.** Resistance/speed/incline targets, fan, and weight writes are now all gated on the console's declared feature set — matching how the equipment expects to be driven and eliminating a class of rejected-command noise.
