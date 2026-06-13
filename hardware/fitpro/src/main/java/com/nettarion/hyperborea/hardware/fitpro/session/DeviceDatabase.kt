@@ -110,6 +110,27 @@ object DeviceDatabase {
         speedStep = 0.5f,
     )
 
+    /**
+     * Hand-maintained entries for equipment not in the auto-generated [IfitDeviceCatalog] — newer
+     * iFit V2 consoles that ship before iFit's part-number export catches up. Keyed by the MCU's
+     * part number (the same number [lookupPartNumber] binary-searches), checked first there.
+     * Bounds come from the manufacturer's spec sheet.
+     */
+    private val EXTRA_PART_NUMBERS: Map<Int, DeviceRecord> = mapOf(
+        // NordicTrack T Series 9 (FitPro V2, model ETNT15425-INT). Spec: 0–20 km/h, 0–12% incline.
+        // https://www.nordictrack.com/fr/product/nordictrack-tapis-de-course-t-series-9
+        455916 to DeviceRecord(
+            name = "NordicTrack T Series 9",
+            type = DeviceType.TREADMILL,
+            maxResistance = null,
+            minIncline = 0f,
+            maxIncline = 12f,
+            maxSpeed = 20f,
+            inclineStep = 0.5f,
+            speedStep = 0.5f,
+        ),
+    )
+
     // Model number lookup via ICON part number suffix matching.
     // Model number comes from V1 handshake SystemInfoResponse (e.g. 2117 → "EBNT02117").
     private fun lookupModelNumber(modelNumber: Int): DeviceRecord? {
@@ -129,6 +150,7 @@ object DeviceDatabase {
     // Part number lookup via IfitDeviceCatalog (sorted parallel arrays, binary search).
     // Part number comes from V1 handshake SystemInfoResponse.
     private fun lookupPartNumber(partNumber: Int): DeviceRecord? {
+        EXTRA_PART_NUMBERS[partNumber]?.let { return it }
         val idx = IfitDeviceCatalog.partNumbers.binarySearch(partNumber)
         if (idx < 0) return null
 

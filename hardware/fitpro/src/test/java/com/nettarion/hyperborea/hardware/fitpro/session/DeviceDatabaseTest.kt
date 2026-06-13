@@ -38,6 +38,17 @@ class DeviceDatabaseTest {
         assertThat(info.type).isEqualTo(DeviceType.BIKE)
     }
 
+    @Test
+    fun `hand-added part number resolves to its catalogued treadmill`() {
+        // NordicTrack T Series 9 — not in the auto-generated catalog, added via EXTRA_PART_NUMBERS.
+        val info = DeviceDatabase.fromHandshake(modelNumber = 0, partNumber = 455916)
+        assertThat(info.name).isEqualTo("NordicTrack T Series 9")
+        assertThat(info.type).isEqualTo(DeviceType.TREADMILL)
+        assertThat(info.maxSpeed).isEqualTo(20f)
+        assertThat(info.minIncline).isEqualTo(0f)
+        assertThat(info.maxIncline).isEqualTo(12f)
+    }
+
     // ── Type-Based Defaults (via defaultsForType) ──
 
     @Test
