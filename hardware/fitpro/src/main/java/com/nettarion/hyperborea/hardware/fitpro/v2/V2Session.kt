@@ -610,7 +610,14 @@ class V2Session(
             V2FeatureId.DISTANCE -> accumulator.updateDistance(value / 1000f)
             V2FeatureId.CURRENT_CALORIES -> accumulator.updateCalories(value.toInt())
             V2FeatureId.RUNNING_TIME -> accumulator.updateElapsedTime(value.toLong())
-            V2FeatureId.TARGET_KPH -> accumulator.updateTargetSpeed(value)
+            V2FeatureId.TARGET_KPH -> {
+                accumulator.updateTargetSpeed(value)
+                // Belt machines don't report instantaneous speed (CURRENT_KPH is never sent on the
+                // V2 treadmill); the belt runs at the commanded TARGET_KPH, so that IS the actual
+                // speed. Drive the displayed/broadcast speed from it. Bikes/ellipticals report a
+                // real CURRENT_KPH and keep TARGET_KPH as a pure target, so this is belt-only.
+                if (detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
+            }
             V2FeatureId.TARGET_GRADE -> accumulator.updateTargetIncline(value)
             V2FeatureId.SYSTEM_MODE -> { /* System on/standby/sleep — not the workout state, and not exercise data */ }
             // Write-only init configuration — never subscribed, but a console may echo writes back.

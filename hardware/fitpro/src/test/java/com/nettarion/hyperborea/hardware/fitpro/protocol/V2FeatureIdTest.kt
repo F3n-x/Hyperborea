@@ -55,8 +55,11 @@ class V2FeatureIdTest {
     }
 
     @Test
-    fun `subscribable list does not include target features`() {
-        assertThat(V2FeatureId.subscribable).doesNotContain(V2FeatureId.TARGET_KPH)
+    fun `subscribable list includes TARGET_KPH for belt speed`() {
+        // Belt machines never report CURRENT_KPH; the belt runs at the commanded TARGET_KPH, so we
+        // subscribe to it to read the actual belt speed (see V2Session.applyEvent). TARGET_GRADE
+        // stays unsubscribed — belt grade comes through CURRENT_GRADE.
+        assertThat(V2FeatureId.subscribable).contains(V2FeatureId.TARGET_KPH)
         assertThat(V2FeatureId.subscribable).doesNotContain(V2FeatureId.TARGET_GRADE)
     }
 

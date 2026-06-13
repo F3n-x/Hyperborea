@@ -63,6 +63,12 @@ enum class V2FeatureId(val code: Int) {
             CURRENT_KPH, RPM, CURRENT_GRADE, TARGET_RESISTANCE, MAX_RESISTANCE, WATTS,
             RUNNING_TIME, KEY_COOKED, REQUEST_DISCONNECT, TOTAL_IN_USE_SECONDS,
             TOTAL_MACHINE_DISTANCE,
+            // Belt machines (treadmills/incline trainers) never populate CURRENT_KPH — the belt
+            // runs at the commanded speed reported in the writable TARGET_KPH field, which is the
+            // actual speed for a belt (confirmed on a NordicTrack T 9 Series: CURRENT_KPH sent 0
+            // times during a run, TARGET_KPH tracked every speed change). Subscribe so V2Session
+            // can drive the displayed/broadcast speed from it (see applyEvent).
+            TARGET_KPH,
         )
     }
 }

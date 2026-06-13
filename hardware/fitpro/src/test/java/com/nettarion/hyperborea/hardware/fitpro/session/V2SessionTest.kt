@@ -126,6 +126,47 @@ class V2SessionTest {
     }
 
     @Test
+    fun `TARGET_KPH drives displayed speed on a belt machine`() = runTest {
+        val session = createSession(this)
+        // Belt feature set (speed + grade, no resistance) → detected as a treadmill.
+        emitSupportedFeatures(
+            V2FeatureId.CURRENT_KPH, V2FeatureId.TARGET_KPH,
+            V2FeatureId.CURRENT_GRADE, V2FeatureId.WORKOUT_STATE,
+        )
+        session.start()
+        advanceUntilIdle()
+        assertThat(session.detectedDeviceType).isEqualTo(DeviceType.TREADMILL)
+
+        // The treadmill never reports CURRENT_KPH; the belt runs at the commanded TARGET_KPH.
+        transport.emitIncoming(buildEventPacket(V2FeatureId.TARGET_KPH, 3.5f))
+        runCurrent()
+
+        assertThat(session.exerciseData.value!!.speed).isEqualTo(3.5f)
+        assertThat(session.exerciseData.value!!.targetSpeed).isEqualTo(3.5f)
+    }
+
+    @Test
+    fun `TARGET_KPH does not drive speed on a bike`() = runTest {
+        val session = createSession(this)
+        // Resistance present → detected as a bike; TARGET_KPH is a pure target there.
+        emitSupportedFeatures(
+            V2FeatureId.TARGET_RESISTANCE, V2FeatureId.CURRENT_KPH,
+            V2FeatureId.TARGET_KPH, V2FeatureId.WORKOUT_STATE,
+        )
+        session.start()
+        advanceUntilIdle()
+        assertThat(session.detectedDeviceType).isEqualTo(DeviceType.BIKE)
+
+        transport.emitIncoming(buildEventPacket(V2FeatureId.CURRENT_KPH, 0.0f))
+        transport.emitIncoming(buildEventPacket(V2FeatureId.TARGET_KPH, 30.0f))
+        runCurrent()
+
+        assertThat(session.exerciseData.value!!.targetSpeed).isEqualTo(30.0f)
+        // Displayed speed comes from CURRENT_KPH (0 here), never from the target on a bike.
+        assertThat(session.exerciseData.value!!.speed).isEqualTo(0f)
+    }
+
+    @Test
     fun `no periodic keepalive packets while streaming`() = runTest {
         // Init may include one-shot configuration writes (heartbeat interval, idle lock), but
         // nothing is ever written unprompted after bring-up — the stock stack doesn't either.
@@ -237,10 +278,11 @@ class V2SessionTest {
         advanceUntilIdle()
 
         assertThat(session.detectedDeviceType).isEqualTo(DeviceType.TREADMILL)
-        // Subscriptions reflect the union, not any single frame.
+        // Subscriptions reflect the union, not any single frame. TARGET_KPH is subscribed too:
+        // belt machines read their actual speed from it (CURRENT_KPH stays 0).
         assertThat(subscribedFeatures()).containsExactly(
             V2FeatureId.SYSTEM_MODE, V2FeatureId.WORKOUT_STATE, V2FeatureId.CURRENT_CALORIES,
-            V2FeatureId.PULSE, V2FeatureId.DISTANCE, V2FeatureId.CURRENT_KPH,
+            V2FeatureId.PULSE, V2FeatureId.DISTANCE, V2FeatureId.CURRENT_KPH, V2FeatureId.TARGET_KPH,
             V2FeatureId.CURRENT_GRADE, V2FeatureId.RUNNING_TIME,
         )
         // Critical treadmill behaviour: never command RUNNING at arm time — only a start
