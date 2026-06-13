@@ -266,6 +266,11 @@ class FitProAdapter @Inject constructor(
             }
 
             val identity = session.identify() ?: return baseInfo
+            // V2 derives the equipment type from the supported-features heuristic during identify;
+            // capture it so resolveDeviceInfo() overlays it onto the catalog/fallback base and the
+            // idle dashboard shows the right device type. V1 reports its type via capabilities at
+            // connect (mergeCapabilities), so leave its identify path untouched.
+            if (session is V2Session) lastDetectedType = session.detectedDeviceType
             updateIdentity(identity)
             return resolveDeviceInfo(identity)
         } catch (e: CancellationException) { throw e }

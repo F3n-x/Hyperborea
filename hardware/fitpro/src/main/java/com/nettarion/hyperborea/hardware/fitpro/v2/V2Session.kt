@@ -214,6 +214,15 @@ class V2Session(
             startReceiveLoop()
             val supported = querySupportedFeatures(attempts = 1)
             logger.i(TAG, if (supported != null) "Console replied with ${supported.size} features" else "Console didn't reply to features query")
+            // Resolve the equipment type during the probe too, so the idle dashboard shows e.g. a
+            // treadmill as a treadmill instead of the catalog default (BIKE). identify() doesn't
+            // subscribe, so the console-reported DEVICE_TYPE event isn't available here — the
+            // supported-features heuristic is; the authoritative console-reported resolution still
+            // runs in start() once subscribed (see resolveDeviceType).
+            if (supported != null) {
+                detectedDeviceType = deriveDeviceType(supported)
+                logger.i(TAG, "Probe device type: $detectedDeviceType (inferred from ${supported.size} features)")
+            }
             _deviceIdentity.value = queryProductInfo() ?: DeviceIdentity()
             return _deviceIdentity.value
         } catch (e: CancellationException) { throw e }
