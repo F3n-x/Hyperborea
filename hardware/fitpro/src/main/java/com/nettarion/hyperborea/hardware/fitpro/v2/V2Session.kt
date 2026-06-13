@@ -96,6 +96,16 @@ class V2Session(
     private var startRequestJob: Job? = null
     private var lastSentGrade = 0f
     private var lastSentSpeed = 0f
+    /** Last belt speed (kph) we commanded via TARGET_KPH — used to tell our echo from MCU-driven changes. */
+    private var lastWrittenTargetKph: Float? = null
+    /**
+     * True once the console is seen driving the belt on its own — it reported a TARGET_KPH we never
+     * commanded (e.g. the T 9 Series sets its own mph-based speed on every key and runs its own
+     * start/stop). Host key-routing and host-driven start are then suppressed so we don't
+     * double-drive it. Stays false for consoles that forward keys but act on nothing (the LargeX),
+     * preserving the host-driven path for them.
+     */
+    private var mcuDrivesBelt = false
     private val gripHeartRate = GripHeartRateFilter()
 
     override suspend fun start() {
@@ -181,6 +191,10 @@ class V2Session(
         _productInfo.value = null
         declaredFeatures = null
         lastKeyCode = 0
+        mcuDrivesBelt = false
+        lastWrittenTargetKph = null
+        lastSentSpeed = 0f
+        lastSentGrade = 0f
         _exerciseData.value = null
         _deviceIdentity.value = null
         _degradedReason.value = null
@@ -339,6 +353,10 @@ class V2Session(
             return
         }
 
+        // Remember the belt speed we command, so an incoming TARGET_KPH that differs is recognised
+        // as the console driving the belt on its own (see noteConsoleBeltSpeed).
+        if (message.feature == V2FeatureId.TARGET_KPH) lastWrittenTargetKph = message.value
+
         try {
             transport.write(V2Codec.encode(message))
         } catch (e: CancellationException) {
@@ -379,6 +397,12 @@ class V2Session(
      * START is handled separately ([requestWorkoutStart] — also valid while parked/paused).
      */
     private fun routeTreadmillKey(key: ConsoleKey) {
+        // A console that drives the belt on its own (see noteConsoleBeltSpeed) already acts on its
+        // speed/incline/Stop keys — routing them too double-steps the belt (e.g. one press jumps
+        // the speed twice, and a few Down presses overshoot to 0 and trip the console's auto-pause).
+        // Observe only for those; the host-driven path below is for consoles that forward keys and
+        // act on nothing (the LargeX).
+        if (mcuDrivesBelt) return
         val mode = _workoutMode.value?.let { V2WorkoutMode.fromRaw(it) }
         if (mode != V2WorkoutMode.RUNNING) return
         val command = when (key) {
@@ -404,6 +428,12 @@ class V2Session(
      * `WRITE_VALUE_NOT_ALLOWED` and Start presses go nowhere). We are that host now, so both
      * triggers land here.
      *
+     * This is for consoles that DON'T drive themselves. A console that runs its own state machine
+     * (see [mcuDrivesBelt] — the T 9 Series goes NONE→WARM_UP→RUNNING and ramps the belt on the
+     * physical Start with no host writes) is left alone: our redundant WARM_UP/RUNNING writes plus
+     * the initial-speed command fight its own start (the belt would jump to our 0.5 kph floor over
+     * its chosen speed). The orchestrator still promotes to Running off the MCU's RUNNING event.
+     *
      * Treadmill-only: bikes/ellipticals are driven straight to RUNNING at arm time and have no
      * Start gate. Single-flight: a completed attempt (confirmed or timed out) re-arms, so the
      * user's next press simply retries. Skips WARM_UP when resuming from PAUSED — RUNNING alone
@@ -411,6 +441,7 @@ class V2Session(
      */
     private fun requestWorkoutStart(trigger: String) {
         if (detectedDeviceType != DeviceType.TREADMILL) return
+        if (mcuDrivesBelt) return
         if (_sessionState.value !is SessionState.Streaming) return
         val from = _workoutMode.value?.let { V2WorkoutMode.fromRaw(it) }
         if (from == V2WorkoutMode.RUNNING) return
@@ -431,12 +462,15 @@ class V2Session(
                 return@launch
             }
             val running = confirmWorkoutMode("reach RUNNING after Start") { it == V2WorkoutMode.RUNNING }
-            if (running) {
+            if (running && !mcuDrivesBelt) {
                 logger.i(TAG, "Console workout state: RUNNING (start request honored)")
                 // Pressing Start on a treadmill means "belt go": command the minimum belt speed
                 // (or the last commanded speed when resuming), like the stock UI does after its
                 // countdown. Without this the workout is RUNNING over a dead belt and — since
                 // the speed keys are host-routed too — there'd be no way to ever move it.
+                // Skipped once mcuDrivesBelt latched: that console picks its own start speed (the
+                // WARM_UP write above already made it report TARGET_KPH), and forcing 0.5 here only
+                // fights it.
                 writeFeature(DeviceCommand.SetTargetSpeed(maxOf(lastSentSpeed, INITIAL_BELT_KPH)))
             }
         }
@@ -616,7 +650,10 @@ class V2Session(
                 // V2 treadmill); the belt runs at the commanded TARGET_KPH, so that IS the actual
                 // speed. Drive the displayed/broadcast speed from it. Bikes/ellipticals report a
                 // real CURRENT_KPH and keep TARGET_KPH as a pure target, so this is belt-only.
-                if (detectedDeviceType.isBeltBased) accumulator.updateSpeed(value)
+                if (detectedDeviceType.isBeltBased) {
+                    accumulator.updateSpeed(value)
+                    noteConsoleBeltSpeed(value)
+                }
             }
             V2FeatureId.TARGET_GRADE -> accumulator.updateTargetIncline(value)
             V2FeatureId.SYSTEM_MODE -> { /* System on/standby/sleep — not the workout state, and not exercise data */ }
@@ -662,26 +699,45 @@ class V2Session(
         (value / step).roundToInt() * step
 
     /**
+     * Reacts to a belt-speed value the console reported in TARGET_KPH. A non-zero value that
+     * doesn't match what we last commanded means the MCU is driving the belt itself — latch
+     * [mcuDrivesBelt] so we stop host-routing keys and host-driving start (see those callers).
+     * Either way, re-sync [lastSentSpeed] to the actual belt speed so a later AdjustSpeed (on a
+     * host-driven console) steps from the real value rather than a stale counter.
+     */
+    private fun noteConsoleBeltSpeed(value: Float) {
+        if (!mcuDrivesBelt && value > 0.05f) {
+            val commanded = lastWrittenTargetKph
+            if (commanded == null || kotlin.math.abs(value - commanded) > 0.1f) {
+                mcuDrivesBelt = true
+                logger.i(TAG, "Console drives the belt itself (TARGET_KPH=$value not commanded by us) " +
+                    "— suppressing host key-routing and host-driven start")
+            }
+        }
+        lastSentSpeed = value
+    }
+
+    /**
      * Brings the console up to the workout-active state the way the firmware expects. Two paths,
      * mirroring [com.nettarion.hyperborea.hardware.fitpro.v1.V1Session.transitionToActive]:
      *
-     * - **Treadmill / incline trainer**: try `WARM_UP` and park. The belt is gated on the
-     *   physical Start key; some firmware accepts the arm-time `WARM_UP` (and self-runs on the
-     *   key), other firmware (LargeX) rejects any write from idle with `WRITE_VALUE_NOT_ALLOWED`
-     *   and instead reports [V2WorkoutMode.READY_TO_START] when the key is pressed, expecting
-     *   the host to drive the workout — [requestWorkoutStart] handles that. Either way the
-     *   orchestrator parks in
-     *   [com.nettarion.hyperborea.core.orchestration.OrchestratorState.AwaitingConsoleStart]
-     *   until a `RUNNING` event promotes it.
+     * - **Treadmill / incline trainer**: arm by doing NOTHING and wait for the physical Start key.
+     *   We must NOT write `WARM_UP` here: some belt consoles (the T 9 Series) treat `WARM_UP` as
+     *   "run the belt" and start moving the moment it's written — i.e. the belt would start at arm,
+     *   before the user touches the physical Start (a confirmed field bug). The LargeX rejected the
+     *   arm-time `WARM_UP` from idle anyway and waits for its own [V2WorkoutMode.READY_TO_START]
+     *   report, so dropping the write costs it nothing. On the physical Start the console either
+     *   self-drives to RUNNING (T 9) or reports `READY_TO_START` for [requestWorkoutStart] to
+     *   drive (LargeX). Either way the orchestrator parks in
+     *   [com.nettarion.hyperborea.core.orchestration.OrchestratorState.AwaitingConsoleStart] until
+     *   a `RUNNING` event promotes it.
      * - **Bike / elliptical / rower**: drive the state machine ourselves —
      *   `NONE → WARM_UP → RUNNING`, confirming each step from the [V2FeatureId.WORKOUT_STATE]
      *   events. If the console never confirms, log a warning and continue degraded.
      */
     private suspend fun transitionToWorkout() {
         if (detectedDeviceType == DeviceType.TREADMILL) {
-            writeWorkoutState(V2WorkoutMode.WARM_UP)
-            confirmWorkoutMode("leave idle") { it != V2WorkoutMode.NONE && it != V2WorkoutMode.READY_TO_START }
-            logger.i(TAG, "Console workout state: NONE → WARM_UP (awaiting physical Start key)")
+            logger.i(TAG, "Treadmill armed — staying idle, awaiting the physical Start key")
             _degradedReason.value = null
             return
         }

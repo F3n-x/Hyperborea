@@ -167,6 +167,73 @@ class V2SessionTest {
     }
 
     @Test
+    fun `console-driven belt suppresses speed-key routing`() = runTest {
+        val session = createSession(this)
+        emitSupportedFeatures(
+            V2FeatureId.CURRENT_KPH, V2FeatureId.TARGET_KPH,
+            V2FeatureId.CURRENT_GRADE, V2FeatureId.WORKOUT_STATE, V2FeatureId.KEY_COOKED,
+        )
+        session.start()
+        advanceUntilIdle()
+        transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.RUNNING.raw))
+        runCurrent()
+        // Console reports a belt speed we never commanded → it drives the belt itself.
+        transport.emitIncoming(buildEventPacket(V2FeatureId.TARGET_KPH, 1.60934f))
+        runCurrent()
+
+        val before = transport.writtenPackets.count { it.isFeatureWrite(V2FeatureId.TARGET_KPH) }
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 3f)) // SPEED_UP
+        advanceUntilIdle()
+
+        // No AdjustSpeed write — routing the key would double-step the belt the MCU already moved.
+        assertThat(transport.writtenPackets.count { it.isFeatureWrite(V2FeatureId.TARGET_KPH) })
+            .isEqualTo(before)
+    }
+
+    @Test
+    fun `host-driven belt routes speed keys`() = runTest {
+        val session = createSession(this)
+        // No uncommanded TARGET_KPH ever arrives → console treated as host-driven (LargeX-style).
+        emitSupportedFeatures(
+            V2FeatureId.CURRENT_KPH, V2FeatureId.TARGET_KPH,
+            V2FeatureId.CURRENT_GRADE, V2FeatureId.WORKOUT_STATE, V2FeatureId.KEY_COOKED,
+        )
+        session.start()
+        advanceUntilIdle()
+        assertThat(session.detectedDeviceType).isEqualTo(DeviceType.TREADMILL)
+        transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.RUNNING.raw))
+        runCurrent()
+
+        val before = transport.writtenPackets.count { it.isFeatureWrite(V2FeatureId.TARGET_KPH) }
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 3f)) // SPEED_UP via key
+        runCurrent()
+
+        // The host must drive the belt here, so the speed key produces a TARGET_KPH write.
+        assertThat(transport.writtenPackets.count { it.isFeatureWrite(V2FeatureId.TARGET_KPH) })
+            .isGreaterThan(before)
+    }
+
+    @Test
+    fun `console-driven belt is not host-started on the physical Start key`() = runTest {
+        val session = createSession(this)
+        emitSupportedFeatures(
+            V2FeatureId.CURRENT_KPH, V2FeatureId.TARGET_KPH,
+            V2FeatureId.CURRENT_GRADE, V2FeatureId.WORKOUT_STATE, V2FeatureId.KEY_COOKED,
+        )
+        session.start()
+        advanceUntilIdle()
+        transport.emitIncoming(buildEventPacket(V2FeatureId.TARGET_KPH, 1.60934f)) // MCU drives belt
+        runCurrent()
+
+        transport.emitIncoming(buildEventPacket(V2FeatureId.KEY_COOKED, 2f)) // physical START
+        advanceUntilIdle()
+
+        // We must not drive RUNNING or command an initial belt speed — the MCU starts itself.
+        assertThat(transport.writtenPackets.mapNotNull { it.workoutStateWriteValue() })
+            .doesNotContain(V2WorkoutMode.RUNNING.raw)
+    }
+
+    @Test
     fun `no periodic keepalive packets while streaming`() = runTest {
         // Init may include one-shot configuration writes (heartbeat interval, idle lock), but
         // nothing is ever written unprompted after bring-up — the stock stack doesn't either.
@@ -749,7 +816,7 @@ class V2SessionTest {
     // --- Device type detection + treadmill path ---
 
     @Test
-    fun `treadmill features write WARM_UP but never RUNNING and clear degraded`() = runTest {
+    fun `treadmill arms without writing any workout state and clears degraded`() = runTest {
         // Treadmill profile: belt speed + grade, no flywheel resistance.
         val session = createSession(this)
         emitSupportedFeatures(
@@ -757,19 +824,17 @@ class V2SessionTest {
             V2FeatureId.TARGET_GRADE, V2FeatureId.CURRENT_GRADE,
             V2FeatureId.WORKOUT_STATE,
         )
-        // Only WARM_UP confirmation arrives — the MCU is waiting on the physical Start key, no
-        // RUNNING event ever comes.
-        transport.emitIncoming(buildEventPacket(V2FeatureId.WORKOUT_STATE, V2WorkoutMode.WARM_UP.raw))
 
         session.start()
         advanceUntilIdle()
 
         assertThat(session.sessionState.value).isEqualTo(SessionState.Streaming)
         assertThat(session.detectedDeviceType).isEqualTo(DeviceType.TREADMILL)
-        // Critical: WARM_UP was written, RUNNING was not — the user finishes the start handshake.
+        // Critical: arming writes NO workout state. Some belt consoles run the belt the moment
+        // WARM_UP is written, which would start the treadmill before the user presses the physical
+        // Start. The session stays idle until the physical Start drives the workout.
         val workoutStateWrites = transport.writtenPackets.mapNotNull { it.workoutStateWriteValue() }
-        assertThat(workoutStateWrites).contains(V2WorkoutMode.WARM_UP.raw)
-        assertThat(workoutStateWrites).doesNotContain(V2WorkoutMode.RUNNING.raw)
+        assertThat(workoutStateWrites).isEmpty()
         // And no spurious "degraded" — this is the expected armed state.
         assertThat(session.degradedReason.value).isNull()
     }
